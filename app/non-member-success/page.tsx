@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 
@@ -11,7 +11,8 @@ interface PaymentData {
   tanggal_kunjungan: string;
 }
 
-export default function NonMemberSuccess() {
+// Component utama yang menggunakan useSearchParams
+function NonMemberSuccessContent() {
   const [paymentData, setPaymentData] = useState<PaymentData | null>(null);
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -166,5 +167,23 @@ export default function NonMemberSuccess() {
         </div>
       </div>
     </div>
+  );
+}
+
+// Main component dengan Suspense boundary
+export default function NonMemberSuccess() {
+  return (
+    <Suspense 
+      fallback={
+        <div className="min-h-screen bg-gradient-to-br from-green-50 to-emerald-100 flex items-center justify-center">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-600 mx-auto mb-4"></div>
+            <p className="text-gray-600">Memuat halaman...</p>
+          </div>
+        </div>
+      }
+    >
+      <NonMemberSuccessContent />
+    </Suspense>
   );
 }
