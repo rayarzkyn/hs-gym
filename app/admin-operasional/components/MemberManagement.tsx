@@ -14,8 +14,6 @@ export default function MemberManagement({ data = [] }: MemberManagementProps) {
   useEffect(() => {
     if (data && data.length > 0) {
       setMembers(data);
-    } else {
-      loadMembers();
     }
   }, [data]);
 
@@ -35,26 +33,30 @@ export default function MemberManagement({ data = [] }: MemberManagementProps) {
   };
 
   const filteredMembers = members.filter(member => {
-    const matchesSearch = member.nama.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         member.id.toString().toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSearch = member.nama?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         member.id?.toString().toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = statusFilter === 'all' || member.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
 
   const getStatusColor = (status: string) => {
     const colors = {
+      active: 'bg-green-100 text-green-800',
       paid: 'bg-green-100 text-green-800',
       pending: 'bg-yellow-100 text-yellow-800',
-      expired: 'bg-red-100 text-red-800'
+      expired: 'bg-red-100 text-red-800',
+      suspended: 'bg-gray-100 text-gray-800'
     };
     return colors[status as keyof typeof colors] || 'bg-gray-100 text-gray-800';
   };
 
   const getStatusText = (status: string) => {
     const texts = {
+      active: 'Aktif',
       paid: 'Aktif',
       pending: 'Pending',
-      expired: 'Kadaluarsa'
+      expired: 'Kadaluarsa',
+      suspended: 'Ditangguhkan'
     };
     return texts[status as keyof typeof texts] || status;
   };
@@ -103,6 +105,7 @@ export default function MemberManagement({ data = [] }: MemberManagementProps) {
           className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
         >
           <option value="all">Semua Status</option>
+          <option value="active">Aktif</option>
           <option value="paid">Aktif</option>
           <option value="pending">Pending</option>
           <option value="expired">Kadaluarsa</option>
@@ -128,16 +131,18 @@ export default function MemberManagement({ data = [] }: MemberManagementProps) {
                   <div>
                     <div className="font-medium text-gray-800">{member.nama}</div>
                     <div className="text-sm text-gray-600">ID: {member.id}</div>
-                    <div className="text-xs text-gray-500">{member.phone || '-'}</div>
+                    <div className="text-xs text-gray-500">{member.telepon || member.phone || '-'}</div>
                   </div>
                 </td>
                 <td className="py-4 px-4">
-                  <div className="text-sm text-gray-800">{member.membershipType}</div>
+                  <div className="text-sm text-gray-800">{member.membership_type || member.membershipType}</div>
                   <div className="text-xs text-gray-500">
-                    Bergabung: {new Date(member.joinDate).toLocaleDateString('id-ID')}
+                    Bergabung: {member.tanggal_daftar ? new Date(member.tanggal_daftar).toLocaleDateString('id-ID') : 
+                              member.joinDate ? new Date(member.joinDate).toLocaleDateString('id-ID') : '-'}
                   </div>
                   <div className="text-xs text-gray-500">
-                    Expired: {new Date(member.expiryDate).toLocaleDateString('id-ID')}
+                    Expired: {member.masa_aktif ? new Date(member.masa_aktif).toLocaleDateString('id-ID') :
+                            member.expiryDate ? new Date(member.expiryDate).toLocaleDateString('id-ID') : '-'}
                   </div>
                 </td>
                 <td className="py-4 px-4">
@@ -147,7 +152,8 @@ export default function MemberManagement({ data = [] }: MemberManagementProps) {
                 </td>
                 <td className="py-4 px-4">
                   <div className="text-sm text-gray-800">
-                    {member.lastVisit ? new Date(member.lastVisit).toLocaleDateString('id-ID') : 'Belum pernah'}
+                    {member.lastCheckin ? new Date(member.lastCheckin).toLocaleDateString('id-ID') : 
+                     member.lastVisit ? new Date(member.lastVisit).toLocaleDateString('id-ID') : 'Belum pernah'}
                   </div>
                   <div className="text-xs text-gray-500">
                     {member.totalVisits || 0} kunjungan
@@ -161,7 +167,7 @@ export default function MemberManagement({ data = [] }: MemberManagementProps) {
                     <button className="text-green-600 hover:text-green-800 text-sm font-medium">
                       Detail
                     </button>
-                    {member.status === 'paid' && (
+                    {(member.status === 'active' || member.status === 'paid') && (
                       <button className="text-yellow-600 hover:text-yellow-800 text-sm font-medium">
                         Suspend
                       </button>
@@ -188,7 +194,7 @@ export default function MemberManagement({ data = [] }: MemberManagementProps) {
         </div>
         <div className="bg-green-50 rounded-lg p-3">
           <div className="text-lg font-bold text-green-600">
-            {members.filter(m => m.status === 'paid').length}
+            {members.filter(m => m.status === 'active' || m.status === 'paid').length}
           </div>
           <div className="text-xs text-green-800">Aktif</div>
         </div>

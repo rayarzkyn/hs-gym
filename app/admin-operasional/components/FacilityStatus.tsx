@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 
 interface FacilityStatusProps {
-  data: any;
+  data: any[];
   detailed?: boolean;
 }
 
@@ -20,7 +20,8 @@ export default function FacilityStatus({ data, detailed = false }: FacilityStatu
       available: 'bg-green-500',
       maintenance: 'bg-red-500',
       occupied: 'bg-yellow-500',
-      cleaning: 'bg-blue-500'
+      cleaning: 'bg-blue-500',
+      closed: 'bg-gray-500'
     };
     return colors[status as keyof typeof colors] || 'bg-gray-500';
   };
@@ -30,7 +31,8 @@ export default function FacilityStatus({ data, detailed = false }: FacilityStatu
       available: 'Tersedia',
       maintenance: 'Maintenance',
       occupied: 'Digunakan',
-      cleaning: 'Pembersihan'
+      cleaning: 'Pembersihan',
+      closed: 'Tutup'
     };
     return texts[status as keyof typeof texts] || status;
   };
@@ -67,14 +69,14 @@ export default function FacilityStatus({ data, detailed = false }: FacilityStatu
                 <div>
                   <h3 className="font-semibold text-gray-800">{facility.name}</h3>
                   <p className="text-sm text-gray-600">
-                    {facility.currentUsage}/{facility.capacity} orang • {getStatusText(facility.status)}
+                    {facility.currentUsage || 0}/{facility.capacity} orang • {getStatusText(facility.status)}
                   </p>
                 </div>
               </div>
               
               <div className="text-right">
                 <div className="text-lg font-bold text-gray-800">
-                  {Math.round((facility.currentUsage / facility.capacity) * 100)}%
+                  {Math.round(((facility.currentUsage || 0) / facility.capacity) * 100)}%
                 </div>
                 <div className="text-xs text-gray-500">kapasitas</div>
               </div>
@@ -84,7 +86,7 @@ export default function FacilityStatus({ data, detailed = false }: FacilityStatu
             <div className="mt-3 w-full bg-gray-200 rounded-full h-2">
               <div
                 className={`h-2 rounded-full ${getStatusColor(facility.status)}`}
-                style={{ width: `${(facility.currentUsage / facility.capacity) * 100}%` }}
+                style={{ width: `${((facility.currentUsage || 0) / facility.capacity) * 100}%` }}
               ></div>
             </div>
 
@@ -108,9 +110,11 @@ export default function FacilityStatus({ data, detailed = false }: FacilityStatu
                 </div>
                 
                 {/* Maintenance Info */}
-                <div className="mt-2 text-xs text-gray-500">
-                  Maintenance: {new Date(facility.nextMaintenance).toLocaleDateString('id-ID')}
-                </div>
+                {facility.nextMaintenance && (
+                  <div className="mt-2 text-xs text-gray-500">
+                    Maintenance: {new Date(facility.nextMaintenance).toLocaleDateString('id-ID')}
+                  </div>
+                )}
               </div>
             )}
           </div>

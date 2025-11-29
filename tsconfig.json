@@ -29,6 +29,6 @@
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts",
     "**/*.mts"
-  ],
+, "app/api/user-role/route.js", "app/api/admin/expenses/route.js", "app/api/admin/financial-reports/route.js", "app/api/admin/export/route.js", "app/api/admin/pending-payments/route.js", "app/api/member/data/route.js", "app/api/auth/register/route.js", "app/api/auth/login/route.js", "app/api/auth/next-member-number/route.js", "app/api/member/complete-payment/route.js", "app/api/member/payment/route.js", "app/api/member/status/route.js", "app/api/non-member/payment/route.js", "app/api/non-member/data/route.js", "app/api/non-member/login/route.js", "app/api/operasional/visitors/route.js", "app/api/operasional/test/route.js", "app/api/operasional/stats/route.js", "app/api/operasional/facilities/route.js", "app/api/operasional/members/route.js", "app/api/operasional/attendance/route.js", "app/api/operasional/reports/route.js"  ],
   "exclude": ["node_modules"]
 }

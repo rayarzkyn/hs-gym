@@ -1,6 +1,20 @@
 'use client';
 import { useState, useEffect } from 'react';
-import { OperationalStatsProps } from '../types';
+
+interface OperationalStatsProps {
+  data: {
+    todayVisitors: number;
+    activeMembers: number;
+    currentCapacity: number;
+    todayRevenue: number;
+    monthlyRevenue: number;
+    facilityUsage: number;
+    memberCheckins: number;
+    nonMemberCheckins: number;
+    personalTrainingSessions: number;
+    classAttendances: number;
+  };
+}
 
 export default function OperationalStats({ data }: OperationalStatsProps) {
   const [currentTime, setCurrentTime] = useState(new Date());

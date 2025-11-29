@@ -1,18 +1,34 @@
 'use client';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { VisitorData } from '../types';
 
 interface VisitorChartProps {
-  data: any;
+  data: VisitorData;
 }
 
 export default function VisitorChart({ data }: VisitorChartProps) {
   const [timeRange, setTimeRange] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
+  const [chartData, setChartData] = useState<any[]>([]);
 
-  const chartData = timeRange === 'weekly' ? data?.weekly : 
-                   timeRange === 'monthly' ? data?.monthly : 
-                   [];
+  useEffect(() => {
+    if (data) {
+      if (timeRange === 'weekly') {
+        setChartData(data.weekly || []);
+      } else if (timeRange === 'monthly') {
+        setChartData(data.monthly || []);
+      } else {
+        // Daily view - create from today's data
+        setChartData([{
+          date: 'Hari Ini',
+          visitors: data.today?.total || 0,
+          members: data.today?.members || 0,
+          nonMembers: data.today?.nonMembers || 0
+        }]);
+      }
+    }
+  }, [data, timeRange]);
 
-  const maxVisitors = Math.max(...(chartData?.map((item: any) => item.visitors) || [0]));
+  const maxVisitors = Math.max(...(chartData?.map((item: any) => item.visitors) || [1]));
 
   return (
     <div className="bg-white rounded-xl shadow-lg p-6">
@@ -38,14 +54,16 @@ export default function VisitorChart({ data }: VisitorChartProps) {
       </div>
 
       {!chartData || chartData.length === 0 ? (
-        <div className="h-64 flex items-center justify-center text-gray-500">
-          Tidak ada data pengunjung
+        <div className="h-64 flex flex-col items-center justify-center text-gray-500">
+          <div className="text-4xl mb-2">📊</div>
+          <p>Menunggu data pengunjung...</p>
+          <p className="text-sm mt-1">Data akan muncul saat ada aktivitas presensi</p>
         </div>
       ) : (
         <>
           <div className="h-64 flex items-end space-x-2 mb-6">
             {chartData.map((item: any, index: number) => {
-              const height = (item.visitors / maxVisitors) * 200;
+              const height = item.visitors > 0 ? (item.visitors / maxVisitors) * 200 : 10;
               return (
                 <div key={index} className="flex flex-col items-center flex-1">
                   <div className="flex flex-col items-center space-y-1">
@@ -55,11 +73,11 @@ export default function VisitorChart({ data }: VisitorChartProps) {
                     >
                       <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
                         {item.visitors} pengunjung
-                        {item.members && ` (${item.members} member)`}
+                        {item.members !== undefined && ` (${item.members} member)`}
                       </div>
                     </div>
-                    <div className="text-xs text-gray-600 font-medium">
-                      {item.day || item.month || 'Data'}
+                    <div className="text-xs text-gray-600 font-medium text-center">
+                      {item.date || item.month || 'Today'}
                     </div>
                   </div>
                 </div>
@@ -97,6 +115,11 @@ export default function VisitorChart({ data }: VisitorChartProps) {
               </div>
             </div>
           )}
+
+          {/* Data Info */}
+          <div className="mt-4 text-xs text-gray-500 text-center">
+            Data real-time dari Firebase • Terakhir update: {new Date().toLocaleTimeString('id-ID')}
+          </div>
         </>
       )}
     </div>

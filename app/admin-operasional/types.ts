@@ -1,4 +1,4 @@
-export interface OperationalStats {
+export interface OperationalStatsData {
   todayVisitors: number;
   activeMembers: number;
   currentCapacity: number;
@@ -11,6 +11,10 @@ export interface OperationalStats {
   classAttendances: number;
 }
 
+export interface OperationalStatsProps {
+  data: OperationalStatsData;
+}
+
 export interface VisitorData {
   today: {
     total: number;
@@ -19,7 +23,7 @@ export interface VisitorData {
     peakHour: string;
   };
   weekly: Array<{
-    day: string;
+    date: string;
     visitors: number;
     members: number;
     nonMembers: number;
@@ -27,94 +31,84 @@ export interface VisitorData {
   monthly: Array<{
     month: string;
     visitors: number;
-    growth: number;
+    revenue: number;
   }>;
 }
 
 export interface Facility {
   id: string;
   name: string;
-  status: 'available' | 'maintenance' | 'occupied' | 'cleaning';
+  status: 'available' | 'maintenance' | 'closed' | 'occupied' | 'cleaning';
   capacity: number;
   currentUsage: number;
   lastMaintenance: string;
   nextMaintenance: string;
-  equipment: Array<{
-    name: string;
-    status: string;
-    count: number;
-  }>;
+  equipment?: Equipment[];
+  currentMembers?: number;
+  peakHours?: string[];
+}
+
+export interface Equipment {
+  name: string;
+  status: 'good' | 'needs_maintenance' | 'broken';
+  count: number;
 }
 
 export interface Member {
   id: string;
   nama: string;
-  membershipType: string;
-  joinDate: string;
-  expiryDate: string;
-  status: string;
-  phone: string;
   email: string;
-  lastVisit: string;
-  totalVisits: number;
-  ecardCode?: string;
+  phone?: string;
+  telepon?: string;
+  membershipType?: string;
+  membership_type?: string;
+  joinDate?: string;
+  tanggal_daftar?: string;
+  expiryDate?: string;
+  masa_aktif?: string;
+  status: 'active' | 'expired' | 'suspended' | 'paid' | 'pending';
+  totalVisits?: number;
+  lastVisit?: string;
+  lastCheckin?: string;
 }
 
-export interface Attendance {
+export interface AttendanceRecord {
   id: string;
-  memberId: string | null;
-  memberName: string;
-  checkIn: string;
-  checkOut: string | null;
-  duration: number | null;
-  type: 'member' | 'non-member';
+  userId: string;
+  userName: string;
+  type: 'member' | 'non_member' | 'non-member';
+  checkInTime: string;
+  checkOutTime?: string;
+  date: string;
+  facility?: string;
+  status?: string;
 }
 
-// Props interfaces untuk komponen
-export interface OperationalStatsProps {
-  data: OperationalStats;
+export interface NonMember {
+  id: string;
+  daily_code: string;
+  nama: string;
+  email: string;
+  telepon: string;
+  harga: number;
+  payment_method: string;
+  status: 'active' | 'expired';
+  tanggal_daftar: string;
+  expired_at: string;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface VisitorChartProps {
-  data: VisitorData;
+// Tambahan untuk chart data
+export interface WeeklyDataItem {
+  date: string;
+  visitors: number;
+  members: number;
+  nonMembers: number;
 }
 
-export interface MemberManagementProps {
-  data: Member[];
-}
-
-export interface FacilityStatusProps {
-  data: Facility[];
-  detailed?: boolean;
-}
-
-export interface AttendanceTrackerProps {
-  data: Attendance[];
-  detailed?: boolean;
-}
-
-export interface QuickActionsProps {
-  // Tambahkan props jika diperlukan
-}
-
-export interface ReportData {
-  period: string;
-  totalVisitors: number;
-  totalRevenue: number;
-  activeMembers: number;
-  newMembers: number;
-  facilityUsage: number;
-  peakHours: string[];
-  popularFacilities: Array<{
-    name: string;
-    usage: number;
-    percentage: number;
-  }>;
-}
-
-export interface ReportRequest {
-  reportType: 'daily' | 'weekly' | 'monthly' | 'yearly';
-  startDate?: string;
-  endDate?: string;
-  format: 'pdf' | 'excel' | 'csv';
+export interface MonthlyDataItem {
+  month: string;
+  visitors: number;
+  revenue: number;
 }

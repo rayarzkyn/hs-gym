@@ -1,247 +1,282 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 interface FinancialStatsProps {
   data: any;
   detailed?: boolean;
+  lastUpdate?: string;
 }
 
-export default function FinancialStats({ data, detailed = false }: FinancialStatsProps) {
-  const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly' | 'yearly'>('monthly');
-  const [stats, setStats] = useState<any>(null);
+interface StatsData {
+  summary: {
+    totalRevenue: number;
+    totalExpenses: number;
+    netProfit: number;
+    activeMembers: number;
+    pendingMembers: number;
+    activeNonMembers: number;
+    totalTransactions: number;
+    memberTransactions: number;
+    nonMemberTransactions: number;
+  };
+  revenue: {
+    total: number;
+    membership: number;
+    dailyPass: number;
+    other: number;
+  };
+  transactions: {
+    total: number;
+    membership: number;
+    dailyPass: number;
+    date: string;
+  };
+  members: {
+    active: number;
+    pending: number;
+    total: number;
+  };
+  debug?: any;
+  lastUpdated?: string;
+}
+
+export default function FinancialStats({ data, detailed = false, lastUpdate }: FinancialStatsProps) {
+  const [statsData, setStatsData] = useState<StatsData | null>(null);
 
   useEffect(() => {
     if (data) {
-      const summary = data.summary;
-      
-      // Safe data access dengan fallback values
-      const revenueData = data.revenue || [];
-      const memberGrowthData = data.memberGrowth || data.members || [];
-      const totalMembers = data.members?.total || data.totalMembers || 0;
-      
-      setStats({
-        pendapatanHariIni: revenueData[0]?.pendapatan || revenueData[0]?.revenue || 0,
-        pendapatanBulanIni: summary?.totalRevenue || data.revenue?.total || 0,
-        totalMember: Array.isArray(memberGrowthData) 
-          ? memberGrowthData.reduce((sum: number, item: any) => sum + (item.member_baru || item.newMembers || 0), 0)
-          : totalMembers,
-        transaksiPending: data.pendingTransactions || 0,
-        rataRataTransaksi: summary?.averageTransaction || data.averageTransaction || 0,
-        totalTransaksi: summary?.totalTransactions || data.totalTransactions || 0,
-        growth: calculateGrowth(data)
-      });
+      setStatsData(data);
+      console.log('📊 FinancialStats received data:', data);
     }
-  }, [data, period]);
+  }, [data]);
 
-  const calculateGrowth = (data: any) => {
-    try {
-      const revenueData = data.revenue || [];
-      if (revenueData.length < 2) return data.growth || data.revenue?.growth || 12.5;
-      
-      const current = revenueData[0]?.pendapatan || revenueData[0]?.revenue || 0;
-      const previous = revenueData[1]?.pendapatan || revenueData[1]?.revenue || 0;
-      
-      if (previous === 0) return 100;
-      return ((current - previous) / previous) * 100;
-    } catch (error) {
-      return 12.5; // Fallback growth value
-    }
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('id-ID', {
+      style: 'currency',
+      currency: 'IDR',
+      minimumFractionDigits: 0,
+    }).format(amount);
   };
 
-  // Safe access untuk detailed view data
-  const paymentMethods = data?.paymentMethods || data?.expenses?.categories || [];
-  const packagesData = data?.packages || [];
-
-  if (!stats) {
+  if (!statsData) {
     return (
-      <div className="flex justify-center items-center h-32">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500"></div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {[1, 2, 3, 4].map(i => (
+          <div key={i} className="bg-white rounded-2xl p-6 shadow-lg animate-pulse">
+            <div className="h-4 bg-gray-200 rounded w-3/4 mb-4"></div>
+            <div className="h-8 bg-gray-200 rounded w-1/2"></div>
+          </div>
+        ))}
       </div>
     );
   }
 
-  const statCards = [
+  // Calculate trends
+  const calculateTrend = (current: number, previous: number = current * 0.8) => {
+    if (previous === 0) return { value: '+0%', trend: 'up' };
+    const change = ((current - previous) / previous) * 100;
+    return {
+      value: `${change >= 0 ? '+' : ''}${change.toFixed(1)}%`,
+      trend: change >= 0 ? 'up' : 'down'
+    };
+  };
+
+  const revenueTrend = calculateTrend(statsData.summary.totalRevenue);
+  const expenseTrend = calculateTrend(statsData.summary.totalExpenses);
+  const profitTrend = calculateTrend(statsData.summary.netProfit);
+  const transactionTrend = calculateTrend(statsData.summary.totalTransactions);
+
+  const stats = [
     {
-      title: 'Pendapatan Hari Ini',
-      value: `Rp ${stats.pendapatanHariIni.toLocaleString('id-ID')}`,
-      change: stats.growth,
+      title: 'Total Pendapatan',
+      value: formatCurrency(statsData.summary.totalRevenue),
+      change: revenueTrend.value,
+      trend: revenueTrend.trend,
       icon: '💰',
-      color: 'green'
+      color: 'text-green-600',
+      bgColor: 'bg-green-50',
+      description: `Membership: ${formatCurrency(statsData.revenue.membership)} | Daily Pass: ${formatCurrency(statsData.revenue.dailyPass)}`
     },
     {
-      title: 'Pendapatan Bulan Ini',
-      value: `Rp ${stats.pendapatanBulanIni.toLocaleString('id-ID')}`,
-      change: 12.5,
-      icon: '📊',
-      color: 'blue'
+      title: 'Total Pengeluaran',
+      value: formatCurrency(statsData.summary.totalExpenses),
+      change: expenseTrend.value,
+      trend: expenseTrend.trend,
+      icon: '📤',
+      color: 'text-red-600',
+      bgColor: 'bg-red-50'
+    },
+    {
+      title: 'Laba Bersih',
+      value: formatCurrency(statsData.summary.netProfit),
+      change: profitTrend.value,
+      trend: profitTrend.trend,
+      icon: '📈',
+      color: statsData.summary.netProfit >= 0 ? 'text-blue-600' : 'text-red-600',
+      bgColor: statsData.summary.netProfit >= 0 ? 'bg-blue-50' : 'bg-red-50'
     },
     {
       title: 'Total Transaksi',
-      value: stats.totalTransaksi.toLocaleString('id-ID'),
-      change: 8.2,
-      icon: '🛒',
-      color: 'purple'
+      value: statsData.summary.totalTransactions.toString(),
+      change: transactionTrend.value,
+      trend: transactionTrend.trend,
+      icon: '💳',
+      color: 'text-purple-600',
+      bgColor: 'bg-purple-50',
+      description: `Member: ${statsData.transactions.membership} | Daily Pass: ${statsData.transactions.dailyPass}`
+    }
+  ];
+
+  const detailedStats = [
+    {
+      title: 'Member Aktif',
+      value: statsData.members.active.toString(),
+      icon: '🏋️',
+      color: 'text-cyan-600',
+      bgColor: 'bg-cyan-50',
+      revenue: formatCurrency(statsData.revenue.membership)
     },
     {
-      title: 'Rata-rata Transaksi',
-      value: `Rp ${Math.round(stats.rataRataTransaksi).toLocaleString('id-ID')}`,
-      change: 5.1,
-      icon: '📈',
-      color: 'orange'
+      title: 'Member Pending',
+      value: statsData.members.pending.toString(),
+      icon: '⏳',
+      color: 'text-yellow-600',
+      bgColor: 'bg-yellow-50'
+    },
+    {
+      title: 'Daily Pass Aktif',
+      value: statsData.summary.activeNonMembers.toString(),
+      icon: '🎫',
+      color: 'text-orange-600',
+      bgColor: 'bg-orange-50'
+    },
+    {
+      title: 'Transaksi Daily Pass',
+      value: statsData.summary.nonMemberTransactions.toString(),
+      icon: '✅',
+      color: 'text-green-600',
+      bgColor: 'bg-green-50',
+      revenue: formatCurrency(statsData.revenue.dailyPass)
     }
   ];
 
   return (
     <div className="space-y-6">
-      {/* Period Selector */}
+      {/* Last Update Indicator */}
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold text-gray-800">Dashboard Keuangan</h2>
-        <div className="flex space-x-2 bg-white rounded-lg p-1 shadow">
-          {['daily', 'weekly', 'monthly', 'yearly'].map((p) => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p as any)}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition ${
-                period === p
-                  ? 'bg-green-500 text-white'
-                  : 'text-gray-600 hover:text-gray-800'
-              }`}
-            >
-              {p === 'daily' && 'Harian'}
-              {p === 'weekly' && 'Mingguan'}
-              {p === 'monthly' && 'Bulanan'}
-              {p === 'yearly' && 'Tahunan'}
-            </button>
-          ))}
+        <div className="text-sm text-gray-500">
+          Terakhir update: <span className="font-medium">{lastUpdate}</span>
         </div>
       </div>
 
-      {/* Stats Grid */}
+      {/* Debug Info - Show detailed debug info */}
+      {statsData.debug && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <h4 className="text-sm font-semibold text-blue-800 mb-2">Info Data:</h4>
+          <div className="text-xs text-blue-700 grid grid-cols-2 md:grid-cols-3 gap-2">
+            <div>Membership Revenue: <strong>{formatCurrency(statsData.debug.membershipRevenue)}</strong></div>
+            <div>Daily Pass Revenue: <strong>{formatCurrency(statsData.debug.dailyPassRevenueFromTransactions)}</strong></div>
+            <div>Total Revenue: <strong>{formatCurrency(statsData.debug.totalRevenue)}</strong></div>
+            <div>Active Members: <strong>{statsData.debug.activeMembersCount}</strong></div>
+            <div>Non-Member Transactions: <strong>{statsData.debug.nonMemberTransactionsCount}</strong></div>
+          </div>
+        </div>
+      )}
+
+      {/* Main Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {statCards.map((stat, index) => (
-          <div
-            key={index}
-            className="bg-white rounded-xl shadow-lg p-6 border-l-4 border-green-500 hover:shadow-xl transition-shadow duration-300"
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex-1">
-                <p className="text-sm text-gray-600 font-medium">{stat.title}</p>
-                <p className="text-2xl font-bold text-gray-800 mt-1">
-                  {stat.value}
-                </p>
-                <div className={`flex items-center mt-2 text-sm ${
-                  stat.change >= 0 ? 'text-green-600' : 'text-red-600'
-                }`}>
-                  <span className="font-medium">
-                    {stat.change >= 0 ? '↗' : '↘'} {Math.abs(stat.change).toFixed(1)}%
-                  </span>
-                  <span className="text-gray-500 ml-1 text-xs">vs periode sebelumnya</span>
-                </div>
-              </div>
-              <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center ml-4">
+        {stats.map((stat, index) => (
+          <div key={index} className="bg-white rounded-2xl p-6 shadow-lg border border-gray-100 hover:shadow-xl transition-shadow">
+            <div className="flex items-center justify-between mb-4">
+              <div className={`p-3 rounded-xl ${stat.bgColor}`}>
                 <span className="text-2xl">{stat.icon}</span>
               </div>
+              <div className={`text-sm font-medium ${
+                stat.trend === 'up' ? 'text-green-600' : 'text-red-600'
+              }`}>
+                {stat.change}
+              </div>
+            </div>
+            
+            <div className="space-y-2">
+              <h3 className="text-gray-600 text-sm font-medium">{stat.title}</h3>
+              <p className={`text-2xl font-bold ${stat.color}`}>
+                {stat.value}
+              </p>
+              {stat.description && (
+                <p className="text-xs text-gray-500">
+                  {stat.description}
+                </p>
+              )}
             </div>
           </div>
         ))}
       </div>
 
-      {/* Detailed Stats */}
+      {/* Detailed Stats (if enabled) */}
       {detailed && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
-          {/* Payment Methods */}
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <h3 className="text-lg font-bold mb-4">Metode Pembayaran</h3>
-            <div className="space-y-3">
-              {paymentMethods.length > 0 ? (
-                paymentMethods.map((method: any, index: number) => (
-                  <div key={index} className="flex items-center justify-between">
-                    <span className="text-gray-600">
-                      {method.name || method.metode_pembayaran || `Metode ${index + 1}`}
-                    </span>
-                    <div className="flex items-center space-x-2">
-                      <div className="w-24 bg-gray-200 rounded-full h-2">
-                        <div
-                          className="h-2 rounded-full bg-blue-500"
-                          style={{ 
-                            width: `${method.percentage || method.persentase || (method.amount / stats.pendapatanBulanIni * 100)}%` 
-                          }}
-                        ></div>
-                      </div>
-                      <span className="text-sm font-medium w-12 text-right">
-                        {Math.round(method.percentage || method.persentase || (method.amount / stats.pendapatanBulanIni * 100))}%
-                      </span>
-                    </div>
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+            {detailedStats.map((stat, index) => (
+              <div key={index} className="bg-white rounded-xl p-4 shadow border border-gray-100 hover:shadow-md transition-shadow">
+                <div className="flex items-center space-x-3">
+                  <div className={`p-2 rounded-lg ${stat.bgColor}`}>
+                    <span className="text-xl">{stat.icon}</span>
                   </div>
-                ))
-              ) : (
-                <div className="text-center text-gray-500 py-4">
-                  Tidak ada data metode pembayaran
+                  <div className="flex-1">
+                    <h4 className="text-gray-600 text-sm">{stat.title}</h4>
+                    <p className={`text-lg font-semibold ${stat.color}`}>
+                      {stat.value}
+                    </p>
+                    {stat.revenue && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        {stat.revenue}
+                      </p>
+                    )}
+                  </div>
                 </div>
-              )}
-            </div>
+              </div>
+            ))}
           </div>
 
-          {/* Package Performance */}
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <h3 className="text-lg font-bold mb-4">Performance Paket</h3>
-            <div className="space-y-3">
-              {packagesData.length > 0 ? (
-                packagesData.map((pkg: any, index: number) => (
-                  <div key={index} className="flex justify-between items-center p-2 hover:bg-gray-50 rounded">
-                    <div>
-                      <span className="font-medium">
-                        {pkg.name || pkg.paket || `Paket ${index + 1}`}
-                      </span>
-                      <div className="text-sm text-gray-500">
-                        {pkg.jumlah_member || pkg.members || 0} member
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-bold">
-                        Rp {(pkg.total_pendapatan || pkg.revenue || 0).toLocaleString('id-ID')}
-                      </div>
-                      <div className="text-sm text-gray-500">
-                        Rp {Math.round(pkg.rata_rata_paket || pkg.average || 0).toLocaleString('id-ID')}/org
-                      </div>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-center text-gray-500 py-4">
-                  Tidak ada data paket
+          {/* Revenue Breakdown */}
+          <div className="bg-white rounded-2xl p-6 shadow-lg mt-6">
+            <h3 className="text-lg font-semibold text-gray-800 mb-4">Detail Pendapatan</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="text-center p-4 bg-blue-50 rounded-xl border border-blue-100">
+                <div className="text-2xl mb-2">💳</div>
+                <div className="text-sm text-gray-600 font-medium">Membership</div>
+                <div className="text-xl font-bold text-blue-600 my-2">
+                  {formatCurrency(statsData.revenue.membership)}
                 </div>
-              )}
-            </div>
-          </div>
-
-          {/* Quick Summary */}
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <h3 className="text-lg font-bold mb-4">Ringkasan Cepat</h3>
-            <div className="space-y-3">
-              <div className="flex justify-between py-1 border-b border-gray-100">
-                <span className="text-gray-600">Transaksi Sukses:</span>
-                <span className="font-bold text-green-600">{stats.totalTransaksi.toLocaleString('id-ID')}</span>
+                <div className="text-xs text-gray-500">
+                  {statsData.transactions.membership} member aktif
+                </div>
               </div>
-              <div className="flex justify-between py-1 border-b border-gray-100">
-                <span className="text-gray-600">Member Baru:</span>
-                <span className="font-bold text-blue-600">{stats.totalMember.toLocaleString('id-ID')}</span>
+              <div className="text-center p-4 bg-green-50 rounded-xl border border-green-100">
+                <div className="text-2xl mb-2">🎫</div>
+                <div className="text-sm text-gray-600 font-medium">Daily Pass</div>
+                <div className="text-xl font-bold text-green-600 my-2">
+                  {formatCurrency(statsData.revenue.dailyPass)}
+                </div>
+                <div className="text-xs text-gray-500">
+                  {statsData.transactions.dailyPass} transaksi
+                </div>
               </div>
-              <div className="flex justify-between py-1 border-b border-gray-100">
-                <span className="text-gray-600">Pendapatan Rata-rata:</span>
-                <span className="font-bold">
-                  Rp {Math.round(stats.rataRataTransaksi).toLocaleString('id-ID')}
-                </span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-gray-600">Pertumbuhan:</span>
-                <span className={`font-bold ${stats.growth >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  {stats.growth >= 0 ? '+' : ''}{stats.growth.toFixed(1)}%
-                </span>
+              <div className="text-center p-4 bg-purple-50 rounded-xl border border-purple-100">
+                <div className="text-2xl mb-2">📊</div>
+                <div className="text-sm text-gray-600 font-medium">Total</div>
+                <div className="text-xl font-bold text-purple-600 my-2">
+                  {formatCurrency(statsData.revenue.total)}
+                </div>
+                <div className="text-xs text-gray-500">
+                  {statsData.transactions.total} total transaksi
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   );

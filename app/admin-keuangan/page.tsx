@@ -18,92 +18,159 @@ export default function AdminKeuangan() {
   const [financialData, setFinancialData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<string>('');
 
   useEffect(() => {
-    const userData = localStorage.getItem('user');
-    if (!userData) {
-      router.push('/login');
-      return;
-    }
-    
-    const userObj = JSON.parse(userData);
-    if (userObj.role !== 'admin_keuangan') {
-      router.push('/login');
-      return;
-    }
-    
-    setUser(userObj);
-    loadDashboardData();
-    
-    // Setup real-time updates
-    const interval = setInterval(() => {
-      loadDashboardData();
-    }, 30000); // Update every 30 seconds
+    if (authChecked) return;
 
-    return () => clearInterval(interval);
-  }, [router]);
+    const checkAuth = () => {
+      const userData = localStorage.getItem('user');
+      const staffUser = localStorage.getItem('staffUser');
+      
+      console.log('🔄 AdminKeuangan - Checking auth...', {
+        hasUser: !!userData,
+        hasStaff: !!staffUser
+      });
+
+      let userObj = null;
+      if (userData) {
+        try {
+          userObj = JSON.parse(userData);
+        } catch (e) {
+          console.error('Error parsing user data:', e);
+        }
+      } else if (staffUser) {
+        try {
+          userObj = JSON.parse(staffUser);
+        } catch (e) {
+          console.error('Error parsing staff data:', e);
+        }
+      }
+
+      if (!userObj) {
+        console.log('❌ No user found, redirecting to login');
+        setAuthChecked(true);
+        router.push('/login');
+        return;
+      }
+      
+      // Check role - allow multiple finance roles
+      const allowedRoles = ['admin_keuangan', 'keuangan', 'admin'];
+      if (!allowedRoles.includes(userObj.role)) {
+        console.log('❌ Invalid role:', userObj.role, 'redirecting to login');
+        setAuthChecked(true);
+        router.push('/login');
+        return;
+      }
+      
+      console.log('✅ Auth valid, setting user:', userObj.role);
+      setUser(userObj);
+      setAuthChecked(true);
+      loadDashboardData();
+    };
+
+    const timer = setTimeout(checkAuth, 100);
+    return () => clearTimeout(timer);
+  }, [router, authChecked]);
+
+  // HAPUS INTERVAL - hanya load data sekali saat mount
+  // useEffect(() => {
+  //   if (!user) return;
+    
+  //   // Setup interval untuk real-time updates - DIHAPUS
+  //   const interval = setInterval(() => {
+  //     loadDashboardData();
+  //   }, 30000); // Update every 30 seconds
+
+  //   return () => clearInterval(interval);
+  // }, [user]);
 
   const loadDashboardData = async () => {
+    if (!user) return;
+    
     try {
       setLoading(true);
       setError(null);
+      
+      console.log('🔄 Loading dashboard data...');
       
       const [financialRes, pendingRes] = await Promise.all([
         fetch('/api/admin/financial-reports?period=monthly'),
         fetch('/api/admin/pending-payments')
       ]);
 
-      // Check if responses are OK
+      console.log('📊 Financial response status:', financialRes.status);
+      console.log('💳 Pending response status:', pendingRes.status);
+
       if (!financialRes.ok) {
-        throw new Error(`Financial reports failed: ${financialRes.status}`);
+        const errorText = await financialRes.text();
+        console.error('❌ Financial reports error:', errorText);
+        throw new Error(`Laporan keuangan gagal: ${financialRes.status}`);
       }
 
       if (!pendingRes.ok) {
-        throw new Error(`Pending payments failed: ${pendingRes.status}`);
+        const errorText = await pendingRes.text();
+        console.error('❌ Pending payments error:', errorText);
+        throw new Error(`Data pembayaran pending gagal: ${pendingRes.status}`);
       }
 
-      // Check content type before parsing
       const financialContentType = financialRes.headers.get('content-type');
       const pendingContentType = pendingRes.headers.get('content-type');
 
       if (!financialContentType?.includes('application/json')) {
         const text = await financialRes.text();
         console.error('Non-JSON response from financial-reports:', text.substring(0, 200));
-        throw new Error('Server returned HTML instead of JSON');
+        throw new Error('Server mengembalikan HTML bukan JSON');
       }
 
       if (!pendingContentType?.includes('application/json')) {
         const text = await pendingRes.text();
         console.error('Non-JSON response from pending-payments:', text.substring(0, 200));
-        throw new Error('Server returned HTML instead of JSON');
+        throw new Error('Server mengembalikan HTML bukan JSON');
       }
 
-      const [financialData, pendingData] = await Promise.all([
+      const [financialResult, pendingResult] = await Promise.all([
         financialRes.json(),
         pendingRes.json()
       ]);
 
-      if (financialData.success) {
-        setFinancialData(financialData.data);
+      console.log('📈 Financial data received:', financialResult.success);
+      console.log('💸 Pending data received:', pendingResult.success);
+
+      if (financialResult.success) {
+        setFinancialData(financialResult.data);
+        setLastUpdate(new Date().toLocaleTimeString());
       } else {
-        throw new Error(financialData.error || 'Failed to load financial data');
+        throw new Error(financialResult.error || 'Gagal memuat data keuangan');
       }
       
       // Add notification for pending payments
-      if (pendingData.success && pendingData.data.length > 0) {
+      if (pendingResult.success && pendingResult.data && pendingResult.data.length > 0) {
         const hasExistingNotification = notifications.some(n => n.type === 'pending_payments');
         if (!hasExistingNotification) {
           addNotification({
             id: Date.now(),
             type: 'pending_payments',
-            message: `${pendingData.data.length} pembayaran menunggu verifikasi`,
+            message: `${pendingResult.data.length} pembayaran menunggu verifikasi`,
             timestamp: new Date(),
-            count: pendingData.data.length
+            count: pendingResult.data.length,
+            priority: 'high'
           });
         }
       }
+
+      // Add success notification for data load
+      addNotification({
+        id: Date.now() + 1,
+        type: 'info',
+        message: 'Data dashboard berhasil dimuat',
+        timestamp: new Date(),
+        autoClose: true
+      });
+
     } catch (error) {
-      console.error('Error loading dashboard data:', error);
+      console.error('❌ Error loading dashboard data:', error);
       setError(error instanceof Error ? error.message : 'Terjadi kesalahan saat memuat data');
       
       // Add error notification
@@ -119,14 +186,19 @@ export default function AdminKeuangan() {
     }
   };
 
+  const handleRefreshData = () => {
+    loadDashboardData();
+  };
+
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    localStorage.removeItem('staffUser');
     router.push('/');
   };
 
   const addNotification = (notification: any) => {
-    setNotifications(prev => [notification, ...prev.slice(0, 9)]); // Keep last 10 notifications
+    setNotifications(prev => [notification, ...prev.slice(0, 9)]);
   };
 
   const removeNotification = (id: number) => {
@@ -137,10 +209,23 @@ export default function AdminKeuangan() {
     setNotifications([]);
   };
 
+  // Show loading while checking auth
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-100 flex items-center justify-center">
+        <div className="bg-white rounded-2xl p-8 shadow-lg text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500 mx-auto mb-4"></div>
+          <div className="text-lg font-semibold text-gray-700">Memeriksa authentication...</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show loading if no user (after auth check)
   if (!user) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="text-xl">Loading...</div>
+      <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-100 flex items-center justify-center">
+        <div className="text-xl">Redirecting...</div>
       </div>
     );
   }
@@ -156,8 +241,19 @@ export default function AdminKeuangan() {
   const renderTabContent = () => {
     if (loading && activeTab === 'dashboard') {
       return (
-        <div className="flex justify-center items-center h-64">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500"></div>
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {[1, 2, 3, 4].map(i => (
+              <div key={i} className="bg-white rounded-2xl p-6 shadow-lg animate-pulse">
+                <div className="h-4 bg-gray-200 rounded w-3/4 mb-4"></div>
+                <div className="h-8 bg-gray-200 rounded w-1/2"></div>
+              </div>
+            ))}
+          </div>
+          <div className="bg-white rounded-2xl p-6 shadow-lg animate-pulse">
+            <div className="h-6 bg-gray-200 rounded w-1/3 mb-4"></div>
+            <div className="h-64 bg-gray-200 rounded"></div>
+          </div>
         </div>
       );
     }
@@ -165,14 +261,22 @@ export default function AdminKeuangan() {
     if (error && activeTab === 'dashboard') {
       return (
         <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-          <div className="text-red-600 text-lg font-semibold mb-2">Error</div>
+          <div className="text-red-600 text-lg font-semibold mb-2">Error Memuat Data</div>
           <p className="text-red-700 mb-4">{error}</p>
-          <button
-            onClick={loadDashboardData}
-            className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition"
-          >
-            Coba Lagi
-          </button>
+          <div className="flex justify-center space-x-3">
+            <button
+              onClick={loadDashboardData}
+              className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition"
+            >
+              Coba Lagi
+            </button>
+            <button
+              onClick={() => setError(null)}
+              className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition"
+            >
+              Tutup
+            </button>
+          </div>
         </div>
       );
     }
@@ -181,9 +285,19 @@ export default function AdminKeuangan() {
       case 'dashboard':
         return financialData ? (
           <div className="space-y-6 animate-fade-in">
-            <FinancialStats data={financialData} />
+            <div className="flex justify-between items-center">
+              <FinancialStats data={financialData} lastUpdate={lastUpdate} />
+              <button
+                onClick={handleRefreshData}
+                className="ml-4 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 flex items-center space-x-2 transition-colors"
+                title="Refresh data"
+              >
+                <span>🔄</span>
+                <span>Refresh</span>
+              </button>
+            </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <RevenueChart data={financialData.revenue} />
+              <RevenueChart data={financialData.chartData} />
               <div className="space-y-6">
                 <PendingPayments preview onAction={addNotification} />
                 <ExportPanel preview />
@@ -192,7 +306,13 @@ export default function AdminKeuangan() {
           </div>
         ) : (
           <div className="text-center py-12">
-            <div className="text-gray-500">Tidak ada data yang tersedia</div>
+            <div className="text-gray-500 text-lg mb-2">Tidak ada data yang tersedia</div>
+            <button
+              onClick={loadDashboardData}
+              className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition"
+            >
+              Muat Data
+            </button>
           </div>
         );
 
@@ -207,7 +327,7 @@ export default function AdminKeuangan() {
           <div className="animate-fade-in">
             <FinancialStats data={financialData} detailed />
             <div className="mt-6">
-              <RevenueChart data={financialData.revenue} detailed />
+              <RevenueChart data={financialData.chartData} detailed />
             </div>
           </div>
         ) : (
@@ -248,9 +368,12 @@ export default function AdminKeuangan() {
               />
               
               <div className="flex items-center space-x-3">
-                <span className="text-gray-700">
-                  Halo, <strong>{user.nama || user.username}</strong>
-                </span>
+                <div className="text-right">
+                  <span className="text-gray-700 block">
+                    Halo, <strong>{user.nama || user.username}</strong>
+                  </span>
+                  <span className="text-xs text-gray-500 capitalize">{user.role}</span>
+                </div>
                 <button 
                   onClick={logout}
                   className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition font-medium"
