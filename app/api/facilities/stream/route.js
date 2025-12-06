@@ -2,7 +2,7 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/firebase-client';
 import { collection, onSnapshot } from 'firebase/firestore';
-import { addSSEClient, removeSSEClient } from '../../../../lib/sse-broadcast';
+import { addSSEClient, removeSSEClient } from '@/lib/sse-broadcast';
 
 export const dynamic = 'force-dynamic';
 

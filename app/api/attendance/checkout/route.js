@@ -12,7 +12,7 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 
-import { broadcastToSSE } from '../../../../lib/sse-broadcast';
+import { broadcastToSSE } from '@/lib/sse-broadcast';
 
 export async function POST(request) {
   try {
