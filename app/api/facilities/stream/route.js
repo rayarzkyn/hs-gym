@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/firebase-client';
 import { collection, onSnapshot } from 'firebase/firestore';
+import { addSSEClient, removeSSEClient } from '@/lib/sse-broadcast';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,6 +17,9 @@ export async function GET(request) {
     const stream = new ReadableStream({
       async start(controller) {
         console.log(`✅ SSE client connected: ${userType}`);
+        
+        // ✅ PERBAIKAN: Tambahkan controller ke clients set
+        addSSEClient(controller);
         
         // Send initial connection message
         controller.enqueue(
@@ -109,6 +113,9 @@ export async function GET(request) {
           isActive = false;
           clearInterval(keepAliveInterval);
           unsubscribe();
+          
+          // ✅ PERBAIKAN: Hapus controller dari clients set
+          removeSSEClient(controller);
           
           try {
             controller.close();

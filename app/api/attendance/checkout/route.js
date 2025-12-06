@@ -12,8 +12,8 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 
-// Import SSE broadcaster
-import { broadcastToSSE } from '../../facilities/stream/route';
+// Import SSE broadcaster dari utils baru
+import { broadcastToSSE } from '@/lib/sse-broadcast';
 
 export async function POST(request) {
   try {
@@ -111,7 +111,7 @@ export async function POST(request) {
           
           console.log(`✅ Facility ${attendanceData.facility} updated: -1 member (now: ${currentMembers}/${capacity})`);
           
-          // 🔥 PERBAIKAN: Trigger SSE update untuk semua clients
+          // 🔥 PERBAIKAN: Trigger SSE update menggunakan utils baru
           try {
             // Ambil semua facilities terbaru setelah update
             const updatedFacilitiesSnapshot = await getDocs(collection(db, 'facilities'));
@@ -140,15 +140,18 @@ export async function POST(request) {
               };
             });
             
-            // Broadcast ke semua connected SSE clients
-            broadcastToSSE({
-              type: 'update',
+            // Broadcast ke semua connected SSE clients menggunakan utils
+            const broadcastCount = broadcastToSSE({
+              type: 'facility_update',
               data: facilities,
               timestamp: new Date().toISOString(),
-              message: `Facility ${attendanceData.facility} updated after checkout`
+              message: `Facility ${attendanceData.facility} updated after checkout`,
+              source: 'checkout',
+              attendanceId: attendanceId,
+              facility: attendanceData.facility
             });
             
-            console.log('📡 SSE update broadcasted for all facilities after checkout');
+            console.log(`📡 SSE broadcasted to ${broadcastCount} clients after checkout`);
             
           } catch (sseError) {
             console.log('SSE broadcast error (non-critical):', sseError.message);
