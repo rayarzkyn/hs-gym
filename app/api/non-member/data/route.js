@@ -1,6 +1,17 @@
 import { NextResponse } from 'next/server';
 import { db } from '../../../../lib/firebase-client';
-import { collection, query, where, orderBy, getDocs, updateDoc, doc } from 'firebase/firestore';
+import { 
+  collection, 
+  query, 
+  where, 
+  orderBy, 
+  getDocs, 
+  updateDoc, 
+  doc, 
+  addDoc,
+  getDoc,
+  Timestamp
+} from 'firebase/firestore';
 
 export async function GET(request) {
   try {
@@ -33,23 +44,49 @@ export async function GET(request) {
 
     const memberDoc = querySnapshot.docs[0];
     const memberData = memberDoc.data();
+    const memberId = memberDoc.id;
     
+    // Format tanggal dengan benar
+    const formatFirestoreDate = (date) => {
+      if (!date) return null;
+      if (date.toDate) {
+        return date.toDate().toISOString();
+      } else if (date instanceof Date) {
+        return date.toISOString();
+      } else if (typeof date === 'string') {
+        return new Date(date).toISOString();
+      }
+      return null;
+    };
+
     // Check expiration
     const now = new Date();
     let expiredAt;
-    if (memberData.expired_at?.toDate) {
-      expiredAt = memberData.expired_at.toDate();
-    } else if (memberData.expired_at instanceof Date) {
-      expiredAt = memberData.expired_at;
+    
+    if (memberData.expired_at) {
+      if (memberData.expired_at.toDate) {
+        expiredAt = memberData.expired_at.toDate();
+      } else if (memberData.expired_at instanceof Date) {
+        expiredAt = memberData.expired_at;
+      } else if (typeof memberData.expired_at === 'string') {
+        expiredAt = new Date(memberData.expired_at);
+      } else {
+        expiredAt = new Date(); // fallback
+      }
     } else {
-      expiredAt = new Date(memberData.expired_at);
+      // Jika tidak ada expired_at, buat default 24 jam dari now
+      expiredAt = new Date(now.getTime() + (24 * 60 * 60 * 1000));
+      // Simpan ke database
+      await updateDoc(doc(db, 'non_members', memberId), {
+        expired_at: Timestamp.fromDate(expiredAt)
+      });
     }
     
-    if (now > expiredAt) {
+    if (now > expiredAt && memberData.status !== 'expired') {
       // Update status to expired
-      await updateDoc(doc(db, 'non_members', memberDoc.id), {
+      await updateDoc(doc(db, 'non_members', memberId), {
         status: 'expired',
-        updated_at: new Date()
+        updated_at: Timestamp.now()
       });
       
       return NextResponse.json({
@@ -58,10 +95,10 @@ export async function GET(request) {
       }, { status: 400 });
     }
 
-    if (memberData.status !== 'active') {
+    if (memberData.status === 'expired') {
       return NextResponse.json({
         success: false,
-        error: 'Akun non-member tidak aktif'
+        error: 'Daily pass sudah kadaluarsa'
       }, { status: 400 });
     }
 
@@ -75,30 +112,43 @@ export async function GET(request) {
       );
       
       const visitsSnapshot = await getDocs(visitsQuery);
-      visits = visitsSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        checkin_time: doc.data().checkin_time?.toDate?.() || doc.data().checkin_time
-      }));
+      visits = visitsSnapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          ...data,
+          checkin_time: formatFirestoreDate(data.checkin_time),
+          checkout_time: formatFirestoreDate(data.checkout_time),
+          created_at: formatFirestoreDate(data.created_at)
+        };
+      });
     } catch (error) {
-      console.log('No visits found:', error.message);
+      console.log('No visits found or error:', error.message);
     }
+
+    // Get current facility from non_members document
+    const currentFacility = memberData.current_facility || null;
+
+    // Find active visit
+    const activeVisit = visits.find(v => v.status === 'active') || null;
 
     // Prepare response data
     const responseData = {
-      daily_code: memberData.daily_code,
-      username: memberData.username,
-      nama: memberData.nama,
-      email: memberData.email,
-      telepon: memberData.telepon,
-      harga: memberData.harga,
-      status: memberData.status,
-      tanggal_daftar: memberData.tanggal_daftar,
-      expired_at: memberData.expired_at,
-      created_at: memberData.created_at,
+      id: memberId,
+      daily_code: memberData.daily_code || '',
+      username: memberData.username || '',
+      nama: memberData.nama || '',
+      email: memberData.email || '',
+      telepon: memberData.telepon || '',
+      harga: memberData.harga || 0,
+      status: memberData.status || 'active',
+      tanggal_daftar: formatFirestoreDate(memberData.tanggal_daftar),
+      expired_at: formatFirestoreDate(expiredAt),
+      created_at: formatFirestoreDate(memberData.created_at),
+      current_facility: currentFacility,
       visits: visits,
       total_visits: visits.length,
-      active_visit: visits.find(v => v.status === 'active') || null
+      active_visit: activeVisit
     };
 
     console.log('✅ Non-member data loaded:', memberData.nama);
@@ -120,12 +170,13 @@ export async function GET(request) {
 
 export async function POST(request) {
   try {
-    const { username, action } = await request.json();
+    const body = await request.json();
+    const { username, action, facilityId } = body;
     
-    if (!username) {
+    if (!username || !action) {
       return NextResponse.json({
         success: false,
-        error: 'Username diperlukan'
+        error: 'Username dan action diperlukan'
       }, { status: 400 });
     }
 
@@ -148,22 +199,38 @@ export async function POST(request) {
 
     const memberDoc = querySnapshot.docs[0];
     const memberData = memberDoc.data();
+    const memberId = memberDoc.id;
+
+    // Format tanggal
+    const formatFirestoreDate = (date) => {
+      if (!date) return null;
+      if (date.toDate) {
+        return date.toDate();
+      } else if (date instanceof Date) {
+        return date;
+      } else if (typeof date === 'string') {
+        return new Date(date);
+      }
+      return new Date();
+    };
 
     // Check expiration
     const now = new Date();
-    let expiredAt;
-    if (memberData.expired_at?.toDate) {
-      expiredAt = memberData.expired_at.toDate();
-    } else if (memberData.expired_at instanceof Date) {
-      expiredAt = memberData.expired_at;
-    } else {
-      expiredAt = new Date(memberData.expired_at);
+    let expiredAt = formatFirestoreDate(memberData.expired_at);
+    
+    // Jika tidak ada expired_at, buat default 24 jam dari pembuatan
+    if (!expiredAt) {
+      const createdAt = formatFirestoreDate(memberData.created_at) || now;
+      expiredAt = new Date(createdAt.getTime() + (24 * 60 * 60 * 1000));
+      await updateDoc(doc(db, 'non_members', memberId), {
+        expired_at: Timestamp.fromDate(expiredAt)
+      });
     }
     
     if (now > expiredAt) {
-      await updateDoc(doc(db, 'non_members', memberDoc.id), {
+      await updateDoc(doc(db, 'non_members', memberId), {
         status: 'expired',
-        updated_at: new Date()
+        updated_at: Timestamp.now()
       });
       
       return NextResponse.json({
@@ -172,10 +239,10 @@ export async function POST(request) {
       }, { status: 400 });
     }
 
-    if (memberData.status !== 'active') {
+    if (memberData.status === 'expired') {
       return NextResponse.json({
         success: false,
-        error: 'Akun non-member tidak aktif'
+        error: 'Daily pass sudah kadaluarsa'
       }, { status: 400 });
     }
 
@@ -197,18 +264,44 @@ export async function POST(request) {
           }, { status: 400 });
         }
 
-        // Record new visit
-        const visitDoc = {
+        // Record new visit (DAILY checkin, bukan facility checkin)
+        const visitData = {
           username: username,
-          daily_code: memberData.daily_code,
-          nama: memberData.nama,
+          daily_code: memberData.daily_code || '',
+          nama: memberData.nama || '',
           location: 'Main Gym Area',
+          type: 'daily_checkin',
           status: 'active',
-          checkin_time: new Date(),
-          created_at: new Date()
+          checkin_time: Timestamp.now(),
+          created_at: Timestamp.now()
         };
         
-        const docRef = await addDoc(collection(db, 'non_member_visits'), visitDoc);
+        // Jika ada facilityId, berarti checkin ke fasilitas tertentu
+        if (facilityId) {
+          // Cek apakah fasilitas ada
+          const facilityDoc = await getDoc(doc(db, 'facilities', facilityId));
+          if (facilityDoc.exists()) {
+            visitData.facility_id = facilityId;
+            visitData.facility_name = facilityDoc.data().name;
+            visitData.type = 'facility_checkin';
+          }
+        }
+        
+        const docRef = await addDoc(collection(db, 'non_member_visits'), visitData);
+
+        // Update non_members untuk current_facility jika checkin ke fasilitas
+        if (facilityId) {
+          await updateDoc(doc(db, 'non_members', memberId), {
+            current_facility: facilityId,
+            last_checkin: Timestamp.now(),
+            updated_at: Timestamp.now()
+          });
+        } else {
+          await updateDoc(doc(db, 'non_members', memberId), {
+            last_checkin: Timestamp.now(),
+            updated_at: Timestamp.now()
+          });
+        }
 
         console.log('✅ Check-in recorded for:', username);
 
@@ -217,8 +310,9 @@ export async function POST(request) {
           message: 'Check-in berhasil! Selamat berolahraga 🏋️‍♂️',
           data: {
             visit_id: docRef.id,
-            checkin_time: new Date().toISOString(),
-            location: 'Main Gym Area'
+            checkin_time: now.toISOString(),
+            location: 'Main Gym Area',
+            facility_id: facilityId || null
           }
         });
 
@@ -239,18 +333,29 @@ export async function POST(request) {
           }, { status: 400 });
         }
 
-        const activeVisit = activeVisitSnapshotCheckout.docs[0];
-        const checkinTime = activeVisit.data().checkin_time?.toDate?.() || activeVisit.data().checkin_time;
+        const activeVisitDoc = activeVisitSnapshotCheckout.docs[0];
+        const activeVisitData = activeVisitDoc.data();
+        const checkinTime = formatFirestoreDate(activeVisitData.checkin_time);
         const checkoutTime = new Date();
-        const durationMs = checkoutTime - checkinTime;
+        const durationMs = checkoutTime.getTime() - checkinTime.getTime();
         const durationHours = (durationMs / (1000 * 60 * 60)).toFixed(1);
+        const durationMinutes = Math.floor(durationMs / (1000 * 60));
 
-        await updateDoc(doc(db, 'non_member_visits', activeVisit.id), {
+        // Update visit record
+        await updateDoc(doc(db, 'non_member_visits', activeVisitDoc.id), {
           status: 'completed',
-          checkout_time: checkoutTime,
-          duration: `${durationHours} jam`,
-          updated_at: new Date()
+          checkout_time: Timestamp.fromDate(checkoutTime),
+          duration: durationMinutes < 60 ? `${durationMinutes} menit` : `${durationHours} jam`,
+          updated_at: Timestamp.now()
         });
+
+        // Update non_members untuk current_facility jika ada
+        if (memberData.current_facility) {
+          await updateDoc(doc(db, 'non_members', memberId), {
+            current_facility: null,
+            updated_at: Timestamp.now()
+          });
+        }
 
         console.log('✅ Check-out recorded for:', username);
 
@@ -258,10 +363,10 @@ export async function POST(request) {
           success: true,
           message: 'Check-out berhasil! Terima kasih telah berkunjung 👋',
           data: {
-            visit_id: activeVisit.id,
-            checkin_time: checkinTime,
-            checkout_time: checkoutTime,
-            duration: `${durationHours} jam`
+            visit_id: activeVisitDoc.id,
+            checkin_time: checkinTime.toISOString(),
+            checkout_time: checkoutTime.toISOString(),
+            duration: durationMinutes < 60 ? `${durationMinutes} menit` : `${durationHours} jam`
           }
         });
 

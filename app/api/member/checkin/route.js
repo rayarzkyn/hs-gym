@@ -1,88 +1,164 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/firebase-client';
+import { db } from '@/lib/firebase';
 import { 
-  collection, 
   doc, 
-  getDoc, 
   updateDoc, 
-  addDoc,
-  serverTimestamp 
+  arrayUnion, 
+  getDoc, 
+  increment, 
+  Timestamp,
+  collection,
+  addDoc
 } from 'firebase/firestore';
 
 export async function POST(request) {
   try {
-    const { memberId } = await request.json();
-    
-    console.log('🔄 Processing checkin for member:', memberId);
+    console.log('🔄 Processing member check-in...');
+    const { memberId, facilityId, facilityName } = await request.json();
 
     if (!memberId) {
-      return NextResponse.json({
-        success: false,
-        error: 'Member ID diperlukan'
-      }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: 'Member ID is required' },
+        { status: 400 }
+      );
     }
 
-    // Cari member di collections
-    let memberDocRef = doc(db, 'members', memberId);
-    let memberDoc = await getDoc(memberDocRef);
+    const memberRef = doc(db, 'members', memberId);
+    const memberDoc = await getDoc(memberRef);
 
     if (!memberDoc.exists()) {
-      memberDocRef = doc(db, 'users', memberId);
-      memberDoc = await getDoc(memberDocRef);
-    }
-
-    if (!memberDoc.exists()) {
-      return NextResponse.json({
-        success: false,
-        error: 'Member tidak ditemukan di database'
-      }, { status: 404 });
+      return NextResponse.json(
+        { success: false, error: 'Member tidak ditemukan' },
+        { status: 404 }
+      );
     }
 
     const memberData = memberDoc.data();
+    const now = new Date();
+    const nowTimestamp = Timestamp.fromDate(now);
 
-    // Create new visit record
-    const visitData = {
-      memberId: memberId,
-      memberName: memberData.nama || memberData.fullName || memberId,
-      checkinTime: serverTimestamp(),
-      location: 'Main Gym Area',
+    // Cek status membership
+    if (memberData.status !== 'active') {
+      return NextResponse.json(
+        { success: false, error: 'Membership tidak aktif. Silakan perpanjang membership Anda.' },
+        { status: 403 }
+      );
+    }
+
+    // Cek masa aktif
+    const masaAktif = new Date(memberData.masa_aktif);
+    if (masaAktif < now) {
+      return NextResponse.json(
+        { success: false, error: 'Membership telah kadaluarsa. Silakan perpanjang membership Anda.' },
+        { status: 403 }
+      );
+    }
+
+    let facilityUpdate = null;
+    
+    // Jika check-in ke fasilitas tertentu
+    if (facilityId) {
+      const facilityRef = doc(db, 'facilities', facilityId);
+      const facilityDoc = await getDoc(facilityRef);
+      
+      if (facilityDoc.exists()) {
+        const facilityData = facilityDoc.data();
+        const currentMembers = facilityData.currentMembers || facilityData.currentUsage || 0;
+        const capacity = facilityData.capacity || 25;
+        
+        // Cek kapasitas
+        if (currentMembers >= capacity) {
+          return NextResponse.json(
+            { success: false, error: `Fasilitas ${facilityName || facilityData.name} sudah penuh.` },
+            { status: 400 }
+          );
+        }
+        
+        // Cek status maintenance
+        if (facilityData.status === 'maintenance') {
+          return NextResponse.json(
+            { success: false, error: `Fasilitas ${facilityName || facilityData.name} sedang dalam perawatan.` },
+            { status: 400 }
+          );
+        }
+        
+        // Update facility
+        await updateDoc(facilityRef, {
+          currentMembers: increment(1),
+          currentUsage: increment(1),
+          updatedAt: nowTimestamp
+        });
+        
+        facilityUpdate = {
+          facilityId,
+          facilityName: facilityName || facilityData.name,
+          capacityStatus: `${currentMembers + 1}/${capacity}`
+        };
+      }
+    }
+
+    // Update member record
+    const checkinData = {
+      id: `checkin_${Date.now()}`,
+      tanggal: nowTimestamp,
+      durasi: '2 jam',
+      facilityId: facilityId || null,
+      facilityName: facilityName || null,
       status: 'completed',
-      duration: '2 jam',
-      createdAt: serverTimestamp()
+      type: facilityId ? 'facility_checkin' : 'daily_checkin',
+      timestamp: nowTimestamp
     };
 
-    const newVisitRef = await addDoc(collection(db, 'visits'), visitData);
+    // Hitung kunjungan bulan ini
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+    const lastCheckin = memberData.lastCheckin ? new Date(memberData.lastCheckin.toDate()) : null;
+    const isSameMonth = lastCheckin && 
+                       lastCheckin.getMonth() === currentMonth && 
+                       lastCheckin.getFullYear() === currentYear;
 
-    // Update member's visit count
-    const totalVisits = (memberData.totalVisits || 0) + 1;
-    const lastCheckin = new Date().toISOString();
-    
-    await updateDoc(memberDocRef, {
-      lastCheckin: lastCheckin,
-      totalVisits: totalVisits,
-      updatedAt: serverTimestamp()
+    const kunjunganBulanIni = isSameMonth ? 
+      (memberData.kunjungan_bulan_ini || 0) + 1 : 1;
+
+    await updateDoc(memberRef, {
+      lastCheckin: nowTimestamp,
+      totalVisits: increment(1),
+      kunjungan_bulan_ini: kunjunganBulanIni,
+      riwayat_kunjungan: arrayUnion(checkinData),
+      updatedAt: nowTimestamp
     });
 
-    console.log('✅ Check-in recorded for:', memberId, 'Visit ID:', newVisitRef.id);
+    // Simpan ke collection checkin_history juga
+    const checkinHistoryRef = await addDoc(collection(db, 'checkin_history'), {
+      memberId,
+      memberName: memberData.nama,
+      ...checkinData,
+      createdAt: nowTimestamp
+    });
 
+    console.log('✅ Check-in successful:', memberData.nama);
+    
     return NextResponse.json({
       success: true,
-      message: 'Check-in berhasil! Selamat berolahraga 🏋️‍♂️',
+      message: facilityName 
+        ? `✅ Check-in ke ${facilityName} berhasil! Selamat berolahraga 🏋️‍♂️` 
+        : '✅ Check-in harian berhasil! Selamat berolahraga 🏋️‍♂️',
       data: {
-        visitId: newVisitRef.id,
-        checkinTime: lastCheckin,
-        location: visitData.location,
-        totalVisits: totalVisits
+        checkinTime: now.toISOString(),
+        facilityId,
+        facilityName,
+        facilityUpdate,
+        memberName: memberData.nama,
+        checkinId: checkinHistoryRef.id
       }
     });
 
   } catch (error) {
-    console.error('❌ Error in checkin API:', error);
+    console.error('❌ Check-in error:', error);
     return NextResponse.json(
       { 
         success: false, 
-        error: 'Terjadi kesalahan saat check-in',
-        message: error.message 
+        error: 'Gagal memproses check-in. Silakan coba lagi.' 
       },
       { status: 500 }
     );

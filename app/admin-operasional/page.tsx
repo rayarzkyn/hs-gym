@@ -1,3 +1,4 @@
+// app/admin-operasional/page.tsx
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -8,7 +9,6 @@ import VisitorChart from './components/VisitorChart';
 import MemberManagement from './components/MemberManagement';
 import FacilityStatus from './components/FacilityStatus';
 import AttendanceTracker from './components/AttendanceTracker';
-import QuickActions from './components/QuickActions';
 import ReportsPanel from './components/ReportsPanel';
 
 // Firebase
@@ -16,22 +16,147 @@ import { db } from '@/lib/firebase';
 import { 
   collection, 
   onSnapshot, 
-  query, 
+  query,
+  where,
+  Timestamp,
   orderBy
 } from 'firebase/firestore';
 
 // Types
-import { 
-  OperationalStatsData, 
-  VisitorData, 
-  Facility, 
-  Member,
-  AttendanceRecord,
-  NonMember 
-} from './types';
+interface MemberData {
+  id: string;
+  fullName?: string;
+  nama?: string;
+  membership_price?: number;
+  membership_plan?: string;
+  createdAt?: any;
+  tanggal_daftar?: any;
+  masa_aktif?: any;
+  status?: string;
+  username?: string;
+  nomor_member?: string;
+  [key: string]: any;
+}
+
+interface NonMemberData {
+  id: string;
+  daily_code?: string;
+  nama?: string;
+  harga?: string | number;
+  created_at?: any;
+  expired_at?: any;
+  status?: string;
+  payment_method?: string;
+  username?: string;
+  current_facility?: string;
+  [key: string]: any;
+}
+
+interface TransactionData {
+  id: string;
+  memberId?: string;
+  member_id?: string;
+  jenis?: string;
+  jumlah?: number;
+  metode_pembayaran?: string;
+  createdAt?: any;
+  tanggal?: any;
+  status?: string;
+  paket?: string;
+  [key: string]: any;
+}
+
+interface NonMemberTransactionData {
+  id: string;
+  daily_code?: string;
+  nama?: string;
+  jumlah?: string | number;
+  metode_pembayaran?: string;
+  created_at?: any;
+  status?: string;
+  [key: string]: any;
+}
+
+// 🔥 TIPE DATA BARU UNTUK ATTENDANCE MEMBER
+interface MemberAttendanceData {
+  id: string;
+  userId?: string;
+  userName?: string;
+  checkInTime?: any;
+  checkOutTime?: any;
+  checkinTime?: any; // backup field
+  checkoutTime?: any; // backup field
+  createdAt?: any;
+  date?: string;
+  duration?: string;
+  facility?: string;
+  status?: string;
+  type?: string;
+  updatedAt?: any;
+  [key: string]: any;
+}
+
+// 🔥 TIPE DATA BARU UNTUK NON-MEMBER VISITS
+interface NonMemberVisitData {
+  id: string;
+  username?: string;
+  checkin_time?: any;
+  created_at?: any;
+  nama?: string;
+  daily_code?: string;
+  facility_name?: string;
+  facility_id?: string;
+  type?: string;
+  status?: string;
+  checkout_time?: any;
+  location?: string; // field baru dari struktur data
+  updated_at?: any;
+  [key: string]: any;
+}
+
+interface TodayVisit {
+  id: string;
+  userId?: string;
+  userName: string;
+  type: 'member' | 'non-member-daily';
+  checkInTime: string;
+  checkOutTime?: string;
+  facility?: string;
+  location?: string; // untuk non-member
+  status: 'checked-in' | 'checked-out';
+  membershipCode?: string; // untuk non-member
+}
+
+// Facility Type
+interface FacilityData {
+  id: string;
+  name: string;
+  status: string;
+  capacity: number;
+  currentMembers: number;
+  currentUsage: number;
+  equipment: Array<{
+    name: string;
+    count: number;
+    status: string;
+  }>;
+  peakHours: string[];
+  lastMaintenance: string;
+  nextMaintenance: string;
+  maintenanceHistory?: any[];
+  createdAt?: any;
+  updatedAt?: any;
+  usagePercentage?: number;
+  activeMembers?: Array<{
+    id: string;
+    name: string;
+    checkinTime: string;
+    type?: string;
+  }>;
+}
 
 // Default data
-const defaultOperationalData: OperationalStatsData = {
+const defaultOperationalData = {
   todayVisitors: 0,
   activeMembers: 0,
   currentCapacity: 0,
@@ -44,206 +169,619 @@ const defaultOperationalData: OperationalStatsData = {
   classAttendances: 0
 };
 
-const defaultVisitorData: VisitorData = {
+const defaultVisitorData = {
   today: {
     total: 0,
     members: 0,
     nonMembers: 0,
     peakHour: '18:00-19:00'
   },
-  weekly: [],
-  monthly: []
+  weekly: [] as Array<{date: string, visitors: number, members: number, nonMembers: number}>,
+  monthly: [] as Array<{month: string, visitors: number, revenue: number}>
 };
 
-// Interface untuk chart data
-interface WeeklyDataItem {
-  date: string;
-  visitors: number;
-  members: number;
-  nonMembers: number;
-}
+// 🔥 Custom Hook untuk SSE (Server-Sent Events)
+function useFacilitiesStream(userType: string) {
+  const [facilities, setFacilities] = useState<any[]>([]);
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-interface MonthlyDataItem {
-  month: string;
-  visitors: number;
-  revenue: number;
+  useEffect(() => {
+    let eventSource: EventSource | null = null;
+    let isMounted = true;
+    
+    const connectSSE = () => {
+      try {
+        if (!isMounted) return;
+        
+        console.log(`🔗 Connecting SSE for ${userType}...`);
+        
+        eventSource = new EventSource(`/api/facilities/stream?userType=${userType}&_t=${Date.now()}`);
+        
+        eventSource.onopen = () => {
+          if (!isMounted) return;
+          console.log(`✅ SSE Connected for ${userType}`);
+          setConnected(true);
+          setError(null);
+        };
+        
+        eventSource.onmessage = (event) => {
+          if (!isMounted) return;
+          
+          try {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'update') {
+              console.log(`📦 Received ${data.data.length} facilities via SSE`);
+              setFacilities(data.data);
+              setLastUpdate(new Date(data.timestamp));
+            } else if (data.type === 'connected') {
+              console.log(`📡 ${data.message}`);
+            } else if (data.type === 'error') {
+              console.error('SSE Server Error:', data.error);
+              setError(data.error);
+            }
+          } catch (error) {
+            console.error('❌ Error parsing SSE data:', error);
+          }
+        };
+        
+        eventSource.onerror = (error) => {
+          if (!isMounted) return;
+          
+          console.log(`⚠️ SSE Connection Error for ${userType}, will reconnect`);
+          setConnected(false);
+          setError('Connection lost. Reconnecting...');
+          
+          if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+          }
+          
+          setTimeout(() => {
+            if (isMounted) {
+              console.log('🔄 Attempting to reconnect SSE...');
+              connectSSE();
+            }
+          }, 3000);
+        };
+      } catch (error) {
+        console.error('❌ Failed to create SSE connection:', error);
+        if (isMounted) {
+          setError('Failed to connect to server');
+        }
+      }
+    };
+    
+    connectSSE();
+    
+    return () => {
+      console.log('🧹 Cleaning up SSE connection');
+      isMounted = false;
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, [userType]);
+  
+  return { facilities, lastUpdate, connected, error };
 }
 
 export default function AdminOperasionalPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [operationalStats, setOperationalStats] = useState<OperationalStatsData>(defaultOperationalData);
-  const [visitorData, setVisitorData] = useState<VisitorData>(defaultVisitorData);
-  const [facilitiesData, setFacilitiesData] = useState<Facility[]>([]);
-  const [membersData, setMembersData] = useState<Member[]>([]);
-  const [attendanceData, setAttendanceData] = useState<AttendanceRecord[]>([]);
-  const [nonMembersData, setNonMembersData] = useState<NonMember[]>([]);
+  const [operationalStats, setOperationalStats] = useState(defaultOperationalData);
+  const [visitorData, setVisitorData] = useState(defaultVisitorData);
+  const [facilitiesData, setFacilitiesData] = useState<FacilityData[]>([]);
+  const [membersData, setMembersData] = useState<MemberData[]>([]);
+  const [attendanceData, setAttendanceData] = useState<TodayVisit[]>([]);
+  const [nonMembersData, setNonMembersData] = useState<NonMemberData[]>([]);
   const [loading, setLoading] = useState(true);
   const [authChecked, setAuthChecked] = useState(false);
   const [realtimeMode, setRealtimeMode] = useState(true);
+
+  // 🔥 Gunakan SSE Hook untuk real-time facilities
+  const { 
+    facilities: streamFacilities, 
+    lastUpdate: streamLastUpdate,
+    connected: streamConnected,
+    error: streamError 
+  } = useFacilitiesStream('operasional');
+
+  // State untuk data real-time tambahan
+  const [memberTransactions, setMemberTransactions] = useState<TransactionData[]>([]);
+  const [nonMemberTransactions, setNonMemberTransactions] = useState<NonMemberTransactionData[]>([]);
+  
+  // 🔥 STATE BARU UNTUK ATTENDANCE
+  const [memberAttendance, setMemberAttendance] = useState<MemberAttendanceData[]>([]);
+  const [nonMemberVisits, setNonMemberVisits] = useState<NonMemberVisitData[]>([]);
+
+  // 🔥 Update facilities data dari SSE
+  useEffect(() => {
+    if (streamFacilities.length > 0) {
+      console.log('🔄 Updating facilities from SSE:', streamFacilities.length);
+      setFacilitiesData(streamFacilities);
+      
+      const totalCapacity = streamFacilities.reduce((sum, facility) => sum + (facility.capacity || 0), 0);
+      const currentCheckedIn = streamFacilities.reduce((sum, facility) => sum + (facility.currentMembers || 0), 0);
+      const facilityUsage = totalCapacity > 0 ? Math.round((currentCheckedIn / totalCapacity) * 100) : 0;
+      
+      setOperationalStats(prev => ({
+        ...prev,
+        currentCapacity: currentCheckedIn,
+        facilityUsage: facilityUsage
+      }));
+    }
+  }, [streamFacilities]);
 
   // 🔥 REAL-TIME DATA FETCHING DARI FIREBASE
   useEffect(() => {
     if (!user || !realtimeMode) return;
 
-    console.log('🔥 Setting up REAL-TIME Firebase listeners...');
+    console.log('🔥 Setting up Firebase listeners...');
 
-    // 1. Facilities Data
-    const facilitiesQuery = query(collection(db, 'facilities'));
-    const unsubscribeFacilities = onSnapshot(facilitiesQuery, 
-      (snapshot) => {
-        const facilities = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as Facility[];
-        console.log('🏢 Realtime facilities:', facilities.length);
-        setFacilitiesData(facilities);
-      },
-      (error) => {
-        console.error('Error facilities:', error);
-      }
-    );
+    const unsubscribers: (() => void)[] = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-    // 2. Members Data
+    // 1. Members Data
     const membersQuery = query(collection(db, 'members'));
     const unsubscribeMembers = onSnapshot(membersQuery,
       (snapshot) => {
-        const members = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        })) as Member[];
+        const members = snapshot.docs.map((doc) => {
+          const data = doc.data() as MemberData;
+          return {
+            _id: doc.id,
+            __id: doc.id,
+            
+            ...data,
+            fullName: data.fullName || data.nama || 'Unknown',
+            nama: data.nama || data.fullName || 'Unknown',
+            membershipPrice: parseFloat(String(data.membership_price)) || 0,
+            membershipPlan: data.membership_plan || 'Unknown',
+            createdAt: data.createdAt?.toDate?.() || data.createdAt || new Date(),
+            tanggal_daftar: data.tanggal_daftar?.toDate?.() || data.tanggal_daftar || new Date(),
+            masa_aktif: data.masa_aktif ? new Date(data.masa_aktif) : null,
+            status: data.status || 'unknown',
+            username: data.username || data.id,
+            nomor_member: data.nomor_member || `MEM${doc.id.slice(0, 6).toUpperCase()}`
+          };
+        });
+        
         console.log('👥 Realtime members:', members.length);
         setMembersData(members);
         
-        // Update active members count
-        const activeMembers = members.filter((m: Member) => 
-          m.status === 'active' || m.status === 'paid'
-        ).length;
+        // Hitung member aktif (berdasarkan masa aktif)
+        const now = new Date();
+        const activeMembers = members.filter(member => {
+          if (member.status !== 'active') return false;
+          if (!member.masa_aktif) return false;
+          return new Date(member.masa_aktif) >= now;
+        }).length;
         
         setOperationalStats(prev => ({
           ...prev,
-          activeMembers
+          activeMembers,
         }));
       },
       (error) => {
         console.error('Error members:', error);
       }
     );
+    unsubscribers.push(unsubscribeMembers);
 
-    // 3. Attendance Data - All data, kita filter manual
-    const attendanceQuery = query(
-      collection(db, 'attendance'), 
-      orderBy('checkInTime', 'desc')
-    );
-    const unsubscribeAttendance = onSnapshot(attendanceQuery,
-      (snapshot) => {
-        const allAttendance = snapshot.docs.map(doc => {
-          const data = doc.data();
-          return {
-            id: doc.id,
-            ...data,
-            checkInTime: data.checkInTime?.toDate?.()?.toISOString() || data.checkInTime,
-            checkOutTime: data.checkOutTime?.toDate?.()?.toISOString() || data.checkOutTime,
-          } as AttendanceRecord;
-        });
-
-        console.log('📝 All attendance records:', allAttendance.length);
-
-        // Process attendance data untuk stats real-time
-        processAttendanceData(allAttendance);
-      },
-      (error) => {
-        console.error('Error attendance:', error);
-      }
-    );
-
-    // 4. Non-Members Data
+    // 2. Non-Members Data (untuk daily pass)
     const nonMembersQuery = query(collection(db, 'non_members'));
     const unsubscribeNonMembers = onSnapshot(nonMembersQuery,
       (snapshot) => {
-        const allNonMembers = snapshot.docs.map(doc => {
-          const data = doc.data();
+        const allNonMembers = snapshot.docs.map((doc) => {
+          const data = doc.data() as NonMemberData;
           return {
-            id: doc.id,
+            _id: doc.id,
+            __id: doc.id,
+            
             ...data,
+            dailyCode: data.daily_code || data.id,
+            nama: data.nama || 'Unknown',
+            harga: parseFloat(String(data.harga)) || 15000,
             created_at: data.created_at?.toDate?.()?.toISOString() || data.created_at,
             expired_at: data.expired_at?.toDate?.()?.toISOString() || data.expired_at,
-          } as NonMember;
+            status: data.status || 'active',
+            paymentMethod: data.payment_method || 'qris',
+            username: data.username || data.id
+          };
         });
 
-        console.log('🎫 All non-members:', allNonMembers.length);
-
-        // Filter active non-members
-        const activeNonMembers = allNonMembers.filter((nm: NonMember) => 
-          nm.status === 'active'
-        );
+        const now = new Date();
+        const activeNonMembers = allNonMembers.filter((nm) => {
+          if (nm.status !== 'active') return false;
+          if (!nm.expired_at) return false;
+          const expiredDate = new Date(nm.expired_at);
+          return expiredDate >= now;
+        });
+        
+        console.log('🎫 Realtime non-members:', activeNonMembers.length);
         setNonMembersData(activeNonMembers);
       },
       (error) => {
         console.error('Error non-members:', error);
       }
     );
+    unsubscribers.push(unsubscribeNonMembers);
+
+    // 🔥 3. MEMBER ATTENDANCE (collection "attendance")
+    const memberAttendanceQuery = query(
+      collection(db, 'attendance'),
+      where('checkInTime', '>=', Timestamp.fromDate(today)),
+      orderBy('checkInTime', 'desc')
+    );
+    
+    const unsubscribeMemberAttendance = onSnapshot(memberAttendanceQuery,
+      (snapshot) => {
+        const attendance = snapshot.docs.map((doc) => {
+          const data = doc.data() as MemberAttendanceData;
+          return {
+            _id: doc.id,
+            __id: doc.id,
+            
+            ...data,
+            // Normalisasi nama field
+            checkInTime: data.checkInTime?.toDate?.() || data.checkinTime?.toDate?.() || data.checkInTime,
+            checkOutTime: data.checkOutTime?.toDate?.() || data.checkoutTime?.toDate?.() || data.checkOutTime,
+            createdAt: data.createdAt?.toDate?.() || data.createdAt,
+            updatedAt: data.updatedAt?.toDate?.() || data.updatedAt,
+            userName: data.userName || 'Member',
+            userId: data.userId || '',
+            status: data.status || 'checked_out',
+            type: data.type || 'member',
+            facility: data.facility || 'Gym Area',
+            date: data.date || new Date().toISOString().split('T')[0]
+          };
+        });
+        
+        console.log('📊 Member attendance today:', attendance.length);
+        setMemberAttendance(attendance);
+      },
+      (error) => {
+        console.error('Error member attendance:', error);
+      }
+    );
+    unsubscribers.push(unsubscribeMemberAttendance);
+
+    // 🔥 4. NON-MEMBER VISITS (collection "non_member_visits")
+    const nmVisitsQuery = query(
+      collection(db, 'non_member_visits'),
+      where('checkin_time', '>=', Timestamp.fromDate(today)),
+      orderBy('checkin_time', 'desc')
+    );
+    
+    const unsubscribeNMVisits = onSnapshot(nmVisitsQuery,
+      (snapshot) => {
+        const nmVisits = snapshot.docs.map((doc) => {
+          const data = doc.data() as NonMemberVisitData;
+          return {
+            _id: doc.id,
+            __id: doc.id,
+            
+            ...data,
+            // Normalisasi field
+            checkin_time: data.checkin_time?.toDate?.() || data.checkin_time,
+            checkout_time: data.checkout_time?.toDate?.() || data.checkout_time,
+            created_at: data.created_at?.toDate?.() || data.created_at,
+            updated_at: data.updated_at?.toDate?.() || data.updated_at,
+            status: data.status || 'completed',
+            type: data.type || 'daily_checkin',
+            nama: data.nama || 'Non-Member',
+            daily_code: data.daily_code || `NM${doc.id.slice(0, 6).toUpperCase()}`,
+            location: data.location || data.facility_name || 'Main Gym Area',
+            username: data.username || ''
+          };
+        });
+        
+        console.log('🎫 Non-member visits today:', nmVisits.length);
+        setNonMemberVisits(nmVisits);
+      },
+      (error) => {
+        console.error('Error non-member visits:', error);
+      }
+    );
+    unsubscribers.push(unsubscribeNMVisits);
+
+    // 5. Member Transactions
+    const memberTransactionsQuery = query(collection(db, 'transactions'));
+    const unsubscribeMemberTransactions = onSnapshot(memberTransactionsQuery,
+      (snapshot) => {
+        const transactions = snapshot.docs.map((doc) => {
+          const data = doc.data() as TransactionData;
+          return {
+            _id: doc.id,
+            __id: doc.id,
+            
+            ...data,
+            memberId: data.memberId || data.member_id || '',
+            jenis: data.jenis || '',
+            jumlah: parseFloat(String(data.jumlah)) || 0,
+            metodePembayaran: data.metode_pembayaran || 'qris',
+            paket: data.paket || '',
+            createdAt: data.createdAt?.toDate?.() || data.createdAt || 
+                      data.tanggal?.toDate?.() || data.tanggal || new Date(),
+            status: data.status || 'completed'
+          };
+        });
+        
+        console.log('💳 Member transactions:', transactions.length);
+        setMemberTransactions(transactions);
+      },
+      (error) => {
+        console.error('Error member transactions:', error);
+      }
+    );
+    unsubscribers.push(unsubscribeMemberTransactions);
+
+    // 6. Non-Member Transactions
+    const nmTransactionsQuery = query(collection(db, 'non_member_transactions'));
+    const unsubscribeNMTransactions = onSnapshot(nmTransactionsQuery,
+      (snapshot) => {
+        const transactions = snapshot.docs.map((doc) => {
+          const data = doc.data() as NonMemberTransactionData;
+          return {
+            _id: doc.id,
+            __id: doc.id,
+            
+            ...data,
+            dailyCode: data.daily_code || '',
+            nama: data.nama || 'Unknown',
+            jumlah: parseFloat(String(data.jumlah)) || 0,
+            metodePembayaran: data.metode_pembayaran || 'qris',
+            createdAt: data.created_at?.toDate?.() || data.created_at || new Date(),
+            status: data.status || 'completed'
+          };
+        });
+        
+        console.log('🎫 Non-member transactions:', transactions.length);
+        setNonMemberTransactions(transactions);
+      },
+      (error) => {
+        console.error('Error non-member transactions:', error);
+      }
+    );
+    unsubscribers.push(unsubscribeNMTransactions);
 
     // Cleanup
     return () => {
-      unsubscribeFacilities();
-      unsubscribeMembers();
-      unsubscribeAttendance();
-      unsubscribeNonMembers();
-      console.log('🧹 Cleaned up realtime listeners');
+      unsubscribers.forEach(unsubscribe => unsubscribe());
+      console.log('🧹 Cleaned up Firebase listeners');
     };
   }, [user, realtimeMode]);
 
-  // Process attendance data untuk generate stats dan visitor data
-  const processAttendanceData = (allAttendance: AttendanceRecord[]) => {
+  // 🔥 FUNGSI: Combine attendance data dari MULTIPLE sources
+  const combineAttendanceData = () => {
+    const todayVisits: TodayVisit[] = [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    console.log('🔄 Combining attendance data...');
+    console.log('👤 Member attendance records:', memberAttendance.length);
+    console.log('🎫 Non-member visit records:', nonMemberVisits.length);
+    
+    // 🔥 Process MEMBER attendance
+    memberAttendance.forEach(att => {
+      if (!att.checkInTime) {
+        console.log('Skipping member attendance without checkInTime:', att.id);
+        return;
+      }
+      
+      const checkinDate = new Date(att.checkInTime);
+      if (checkinDate < today) {
+        console.log('Skipping old member attendance:', att.id, checkinDate);
+        return;
+      }
+      
+      // Cari data member untuk mendapatkan nama lengkap
+      const member = membersData.find(m => 
+        m.id === att.userId || 
+        m._id === att.userId || 
+        m.username === att.userId ||
+        m.nomor_member === att.userId
+      );
+      
+      // Tentukan status
+      const isCheckedIn = att.status === 'checked_in' || 
+                         (att.status === 'active' && !att.checkOutTime);
+      
+      const status = isCheckedIn ? 'checked-in' : 'checked-out';
+      
+      todayVisits.push({
+        id: att.id,
+        userId: att.userId,
+        userName: member?.nama || member?.fullName || att.userName || 'Member',
+        type: 'member',
+        checkInTime: new Date(att.checkInTime).toISOString(),
+        checkOutTime: att.checkOutTime ? new Date(att.checkOutTime).toISOString() : undefined,
+        facility: att.facility || 'Gym Area',
+        status: status,
+        membershipCode: member?.nomor_member || att.userId
+      });
+    });
+    
+    // 🔥 Process NON-MEMBER visits
+    nonMemberVisits.forEach(visit => {
+      if (!visit.checkin_time) {
+        console.log('Skipping non-member visit without checkin_time:', visit.id);
+        return;
+      }
+      
+      const checkinDate = new Date(visit.checkin_time);
+      if (checkinDate < today) {
+        console.log('Skipping old non-member visit:', visit.id, checkinDate);
+        return;
+      }
+      
+      // Tentukan status non-member
+      const isActive = visit.status === 'active' || 
+                      (visit.status === 'checked_in' && !visit.checkout_time);
+      
+      const status = isActive ? 'checked-in' : 'checked-out';
+      
+      todayVisits.push({
+        id: visit.id,
+        userId: visit.username || visit.daily_code,
+        userName: visit.nama || `Non-Member (${visit.daily_code || 'Daily'})`,
+        type: 'non-member-daily',
+        checkInTime: new Date(visit.checkin_time).toISOString(),
+        checkOutTime: visit.checkout_time ? new Date(visit.checkout_time).toISOString() : undefined,
+        facility: visit.location || visit.facility_name || 'Gym Area',
+        location: visit.location || 'Main Gym Area',
+        status: status,
+        membershipCode: visit.daily_code
+      });
+    });
+    
+    // Sort by check-in time (newest first)
+    todayVisits.sort((a, b) => {
+      return new Date(b.checkInTime).getTime() - new Date(a.checkInTime).getTime();
+    });
+    
+    console.log('📊 Total combined visits today:', todayVisits.length);
+    console.log('👤 Member visits:', todayVisits.filter(v => v.type === 'member').length);
+    console.log('🎫 Non-member visits:', todayVisits.filter(v => v.type === 'non-member-daily').length);
+    
+    setAttendanceData(todayVisits);
+    
+    // Update stats
+    updateStatsFromAttendance(todayVisits);
+  };
+
+  // 🔥 Update stats dari attendance
+  useEffect(() => {
+    if ((memberAttendance.length > 0 || nonMemberVisits.length > 0)) {
+      combineAttendanceData();
+    }
+  }, [memberAttendance, nonMemberVisits, membersData]);
+
+  const updateStatsFromAttendance = (todayVisits: TodayVisit[]) => {
+    console.log('📈 Updating stats from attendance:', todayVisits.length);
+    
     const today = new Date().toISOString().split('T')[0];
     
     // Filter untuk hari ini
-    const todayAttendance = allAttendance.filter(att => {
-      const attDate = new Date(att.checkInTime).toISOString().split('T')[0];
-      return attDate === today;
+    const todayMemberVisits = todayVisits.filter(v => {
+      try {
+        const visitDate = new Date(v.checkInTime).toISOString().split('T')[0];
+        return visitDate === today && v.type === 'member';
+      } catch {
+        return false;
+      }
     });
-
-    console.log('📊 Today attendance:', todayAttendance.length);
-
-    // Set attendance data untuk display
-    setAttendanceData(todayAttendance);
-
-    // Calculate stats
-    const memberCheckins = todayAttendance.filter(a => a.type === 'member').length;
-    const nonMemberCheckins = todayAttendance.filter(a => 
-      a.type === 'non_member' || a.type === 'non-member'
+    
+    const todayNonMemberVisits = todayVisits.filter(v => {
+      try {
+        const visitDate = new Date(v.checkInTime).toISOString().split('T')[0];
+        return visitDate === today && v.type === 'non-member-daily';
+      } catch {
+        return false;
+      }
+    });
+    
+    console.log('👥 Member visits today:', todayMemberVisits.length);
+    console.log('🎫 Non-member visits today:', todayNonMemberVisits.length);
+    
+    // Yang sedang aktif di gym sekarang (checked-in)
+    const activeInGym = todayVisits.filter(v => v.status === 'checked-in');
+    const activeMembers = activeInGym.filter(v => v.type === 'member').length;
+    const activeNonMembers = activeInGym.filter(v => v.type === 'non-member-daily').length;
+    
+    console.log('🏋️ Currently in gym (active):', activeInGym.length);
+    console.log('👤 Active members in gym:', activeMembers);
+    console.log('🎫 Active non-members in gym:', activeNonMembers);
+    
+    // Hitung training sessions
+    const personalTrainingSessions = todayVisits.filter(v => 
+      v.facility?.toLowerCase().includes('training') || 
+      v.facility?.toLowerCase().includes('personal') ||
+      v.location?.toLowerCase().includes('training') ||
+      v.location?.toLowerCase().includes('personal')
     ).length;
-    const currentCheckedIn = todayAttendance.filter(a => !a.checkOutTime).length;
-    const todayRevenue = nonMemberCheckins * 25000; // Asumsi 25k per non-member
+    
+    // Hitung class attendances
+    const classAttendances = todayVisits.filter(v => 
+      v.facility?.toLowerCase().includes('class') || 
+      v.facility?.toLowerCase().includes('yoga') || 
+      v.facility?.toLowerCase().includes('studio') ||
+      v.location?.toLowerCase().includes('class') ||
+      v.location?.toLowerCase().includes('yoga') ||
+      v.location?.toLowerCase().includes('studio')
+    ).length;
+
+    // Hitung revenue
+    const todayRevenue = calculateTodayRevenue(memberTransactions, nonMemberTransactions);
+    const monthlyRevenue = calculateMonthlyRevenue(memberTransactions, nonMemberTransactions, membersData);
+
+    // Hitung total member aktif (berdasarkan masa aktif, bukan yang checkin)
+    const now = new Date();
+    const activeMembersCount = membersData.filter(member => {
+      if (member.status !== 'active') return false;
+      if (!member.masa_aktif) return false;
+      return new Date(member.masa_aktif) >= now;
+    }).length;
 
     // Update operational stats
-    setOperationalStats({
-      todayVisitors: memberCheckins + nonMemberCheckins,
-      activeMembers: membersData.filter(m => m.status === 'active' || m.status === 'paid').length,
-      currentCapacity: currentCheckedIn,
+    const updatedStats = {
+      todayVisitors: todayMemberVisits.length + todayNonMemberVisits.length,
+      activeMembers: activeMembersCount,
+      currentCapacity: activeInGym.length,
       todayRevenue: todayRevenue,
-      monthlyRevenue: todayRevenue * 30, // Estimasi bulanan
-      facilityUsage: Math.round((currentCheckedIn / 50) * 100), // Asumsi kapasitas 50
-      memberCheckins: memberCheckins,
-      nonMemberCheckins: nonMemberCheckins,
-      personalTrainingSessions: todayAttendance.filter(a => 
-        a.facility?.includes('training') || a.facility?.includes('personal')
-      ).length,
-      classAttendances: todayAttendance.filter(a => 
-        a.facility?.includes('class') || a.facility?.includes('yoga') || a.facility?.includes('studio')
-      ).length
-    });
+      monthlyRevenue: monthlyRevenue,
+      facilityUsage: facilitiesData.length > 0 
+        ? Math.round((activeInGym.length / (facilitiesData.reduce((sum, f) => sum + (f.capacity || 0), 0) || 1)) * 100)
+        : 0,
+      memberCheckins: todayMemberVisits.length,
+      nonMemberCheckins: todayNonMemberVisits.length,
+      personalTrainingSessions: personalTrainingSessions,
+      classAttendances: classAttendances
+    };
+    
+    console.log('📊 Updated operational stats:', updatedStats);
+    
+    setOperationalStats(updatedStats);
 
-    // Generate visitor data untuk chart (7 hari terakhir)
-    generateVisitorChartData(allAttendance);
+    // Update visitor data today
+    setVisitorData(prev => ({
+      ...prev,
+      today: {
+        total: todayMemberVisits.length + todayNonMemberVisits.length,
+        members: todayMemberVisits.length,
+        nonMembers: todayNonMemberVisits.length,
+        peakHour: calculatePeakHour(todayVisits)
+      }
+    }));
   };
 
-  // Generate visitor data untuk chart dari data real
-  const generateVisitorChartData = (allAttendance: AttendanceRecord[]) => {
-    const weeklyData: WeeklyDataItem[] = [];
-    const monthlyData: MonthlyDataItem[] = [];
+  // 🔥 FUNGSI: Calculate peak hour
+  const calculatePeakHour = (attendance: TodayVisit[]) => {
+    if (attendance.length === 0) return '18:00-19:00';
+    
+    const hours = attendance.reduce((acc: any, att) => {
+      if (!att.checkInTime) return acc;
+      const hour = new Date(att.checkInTime).getHours();
+      acc[hour] = (acc[hour] || 0) + 1;
+      return acc;
+    }, {});
+
+    if (Object.keys(hours).length === 0) return '18:00-19:00';
+    
+    const peakHour = Object.keys(hours).reduce((a, b) => 
+      hours[a] > hours[b] ? a : b, '18'
+    );
+    return `${peakHour.toString().padStart(2, '0')}:00-${(parseInt(peakHour) + 1).toString().padStart(2, '0')}:00`;
+  };
+
+  // 🔥 FUNGSI: Generate visitor chart data
+  const generateVisitorChartData = () => {
+    const weeklyData: Array<{date: string, visitors: number, members: number, nonMembers: number}> = [];
+    const monthlyData: Array<{month: string, visitors: number, revenue: number}> = [];
     const today = new Date();
     
     // Generate data 7 hari terakhir
@@ -252,22 +790,25 @@ export default function AdminOperasionalPage() {
       date.setDate(date.getDate() - i);
       const dateStr = date.toISOString().split('T')[0];
       
-      // Filter attendance untuk tanggal ini
-      const dayAttendance = allAttendance.filter(att => {
-        const attDate = new Date(att.checkInTime).toISOString().split('T')[0];
-        return attDate === dateStr;
-      });
-
-      const memberVisits = dayAttendance.filter(a => a.type === 'member').length;
-      const nonMemberVisits = dayAttendance.filter(a => 
-        a.type === 'non_member' || a.type === 'non-member'
-      ).length;
+      // Filter member attendance
+      const memberVisitsCount = memberAttendance.filter(v => {
+        if (!v.checkInTime) return false;
+        const visitDate = new Date(v.checkInTime).toISOString().split('T')[0];
+        return visitDate === dateStr;
+      }).length;
+      
+      // Filter non-member visits
+      const nonMemberVisitsCount = nonMemberVisits.filter(v => {
+        if (!v.checkin_time) return false;
+        const visitDate = new Date(v.checkin_time).toISOString().split('T')[0];
+        return visitDate === dateStr;
+      }).length;
 
       weeklyData.push({
         date: date.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' }),
-        visitors: memberVisits + nonMemberVisits,
-        members: memberVisits,
-        nonMembers: nonMemberVisits
+        visitors: memberVisitsCount + nonMemberVisitsCount,
+        members: memberVisitsCount,
+        nonMembers: nonMemberVisitsCount
       });
     }
 
@@ -276,17 +817,41 @@ export default function AdminOperasionalPage() {
       const month = new Date(today.getFullYear(), today.getMonth() - i, 1);
       const monthStr = month.toLocaleDateString('id-ID', { month: 'short', year: 'numeric' });
       
-      // Hitung visitor untuk bulan ini (simplified - dalam implementasi real, hitung dari data)
       const monthStart = new Date(today.getFullYear(), today.getMonth() - i, 1);
       const monthEnd = new Date(today.getFullYear(), today.getMonth() - i + 1, 0);
       
-      const monthlyAttendance = allAttendance.filter(att => {
-        const attDate = new Date(att.checkInTime);
-        return attDate >= monthStart && attDate <= monthEnd;
-      });
+      const monthlyMemberVisits = memberAttendance.filter(v => {
+        if (!v.checkInTime) return false;
+        const visitDate = new Date(v.checkInTime);
+        return visitDate >= monthStart && visitDate <= monthEnd;
+      }).length;
+      
+      const monthlyNMVisits = nonMemberVisits.filter(v => {
+        if (!v.checkin_time) return false;
+        const visitDate = new Date(v.checkin_time);
+        return visitDate >= monthStart && visitDate <= monthEnd;
+      }).length;
 
-      const monthlyVisitors = monthlyAttendance.length;
-      const monthlyRevenue = monthlyVisitors * 25000; // Estimasi revenue
+      const monthlyVisitors = monthlyMemberVisits + monthlyNMVisits;
+      
+      const monthlyRevenue = calculateMonthlyRevenue(
+        memberTransactions.filter(tx => {
+          if (!tx.createdAt) return false;
+          const txDate = new Date(tx.createdAt);
+          return txDate >= monthStart && txDate <= monthEnd;
+        }),
+        nonMemberTransactions.filter(tx => {
+          if (!tx.createdAt) return false;
+          const txDate = new Date(tx.createdAt);
+          return txDate >= monthStart && txDate <= monthEnd;
+        }),
+        membersData.filter(m => {
+          const joinDate = m.createdAt || m.tanggal_daftar;
+          if (!joinDate) return false;
+          const joinDateObj = joinDate instanceof Date ? joinDate : new Date(joinDate);
+          return joinDateObj >= monthStart && joinDateObj <= monthEnd;
+        })
+      );
 
       monthlyData.push({
         month: monthStr,
@@ -295,32 +860,75 @@ export default function AdminOperasionalPage() {
       });
     }
 
-    // Update visitor data
-    setVisitorData({
-      today: {
-        total: operationalStats.todayVisitors,
-        members: operationalStats.memberCheckins,
-        nonMembers: operationalStats.nonMemberCheckins,
-        peakHour: calculatePeakHour(attendanceData)
-      },
+    setVisitorData(prev => ({
+      ...prev,
       weekly: weeklyData,
       monthly: monthlyData
-    });
+    }));
   };
 
-  const calculatePeakHour = (attendance: AttendanceRecord[]) => {
-    if (attendance.length === 0) return '18:00-19:00';
-    
-    const hours = attendance.reduce((acc: any, att) => {
-      const hour = new Date(att.checkInTime).getHours();
-      acc[hour] = (acc[hour] || 0) + 1;
-      return acc;
-    }, {});
+  // 🔥 Update chart data
+  useEffect(() => {
+    if (memberAttendance.length > 0 || nonMemberVisits.length > 0) {
+      generateVisitorChartData();
+    }
+  }, [memberAttendance, nonMemberVisits, memberTransactions, nonMemberTransactions, membersData]);
 
-    const peakHour = Object.keys(hours).reduce((a, b) => 
-      hours[a] > hours[b] ? a : b, '18'
-    );
-    return `${peakHour}:00-${parseInt(peakHour) + 1}:00`;
+  // Fungsi untuk menghitung pendapatan bulanan
+  const calculateMonthlyRevenue = (memberTx: TransactionData[], nmTx: NonMemberTransactionData[], members: MemberData[]) => {
+    const today = new Date();
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+    
+    // Revenue dari transaksi member bulan ini
+    const memberRevenue = memberTx.filter(tx => {
+      if (tx.status !== 'completed') return false;
+      if (!tx.createdAt) return false;
+      const txDate = new Date(tx.createdAt);
+      return txDate.getMonth() === currentMonth && 
+             txDate.getFullYear() === currentYear;
+    }).reduce((sum, tx) => sum + (parseFloat(String(tx.jumlah)) || 0), 0);
+    
+    // Revenue dari transaksi non-member bulan ini
+    const nonMemberRevenue = nmTx.filter(tx => {
+      if (tx.status !== 'completed') return false;
+      if (!tx.createdAt) return false;
+      const txDate = new Date(tx.createdAt);
+      return txDate.getMonth() === currentMonth && 
+             txDate.getFullYear() === currentYear;
+    }).reduce((sum, tx) => sum + (parseFloat(String(tx.jumlah)) || 0), 0);
+    
+    // Revenue dari membership plan
+    const membershipRevenue = members.filter(m => {
+      const joinDate = m.createdAt || m.tanggal_daftar;
+      if (!joinDate) return false;
+      const joinDateObj = joinDate instanceof Date ? joinDate : new Date(joinDate);
+      return joinDateObj.getMonth() === currentMonth && 
+             joinDateObj.getFullYear() === currentYear;
+    }).reduce((sum, m) => sum + (parseFloat(String(m.membership_price)) || 0), 0);
+    
+    return memberRevenue + nonMemberRevenue + membershipRevenue;
+  };
+
+  // Fungsi untuk menghitung pendapatan hari ini
+  const calculateTodayRevenue = (memberTx: TransactionData[], nmTx: NonMemberTransactionData[]) => {
+    const today = new Date().toISOString().split('T')[0];
+    
+    const todayMemberRevenue = memberTx.filter(tx => {
+      if (tx.status !== 'completed') return false;
+      if (!tx.createdAt) return false;
+      const txDate = new Date(tx.createdAt).toISOString().split('T')[0];
+      return txDate === today;
+    }).reduce((sum, tx) => sum + (parseFloat(String(tx.jumlah)) || 0), 0);
+    
+    const todayNonMemberRevenue = nmTx.filter(tx => {
+      if (tx.status !== 'completed') return false;
+      if (!tx.createdAt) return false;
+      const txDate = new Date(tx.createdAt).toISOString().split('T')[0];
+      return txDate === today;
+    }).reduce((sum, tx) => sum + (parseFloat(String(tx.jumlah)) || 0), 0);
+    
+    return todayMemberRevenue + todayNonMemberRevenue;
   };
 
   // Auth check
@@ -414,26 +1022,59 @@ export default function AdminOperasionalPage() {
                   }`}>
                     🔴 Realtime: {realtimeMode ? 'ON' : 'OFF'}
                   </div>
-                  <div className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">
-                    👥 Online: {attendanceData.filter(a => !a.checkOutTime).length}
+                  <div className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    streamConnected ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                  }`}>
+                    📡 SSE: {streamConnected ? 'CONNECTED' : 'DISCONNECTED'}
                   </div>
-                  <div className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm">
-                    🏢 Facilities: {facilitiesData.length}
+                  <div className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm">
+                    🏋️ Fasilitas: {facilitiesData.length}
                   </div>
                   <div className="px-3 py-1 bg-purple-100 text-purple-800 rounded-full text-sm">
-                    👥 Members: {membersData.length}
+                    👥 Member: {membersData.length}
+                  </div>
+                  <div className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm">
+                    🎫 Non-Member: {nonMembersData.length}
+                  </div>
+                  <div className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm">
+                    📊 Presensi Hari Ini: {attendanceData.length}
                   </div>
                 </div>
-                <button
-                  onClick={toggleRealtimeMode}
-                  className="bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 transition"
-                >
-                  {realtimeMode ? 'Matikan Realtime' : 'Hidupkan Realtime'}
-                </button>
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm text-gray-500">
+                    Update: {streamLastUpdate.toLocaleTimeString('id-ID')}
+                  </span>
+                  <button
+                    onClick={toggleRealtimeMode}
+                    className="bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 transition"
+                  >
+                    {realtimeMode ? 'Matikan Realtime' : 'Hidupkan Realtime'}
+                  </button>
+                </div>
+              </div>
+              {streamError && (
+                <div className="mt-2 text-sm text-red-600">
+                  ⚠️ {streamError}
+                </div>
+              )}
+              
+              {/* 🔥 DEBUG INFO */}
+              <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                <div className="bg-gray-50 p-2 rounded">
+                  <span className="font-medium">Member Attendance:</span> {memberAttendance.length}
+                </div>
+                <div className="bg-gray-50 p-2 rounded">
+                  <span className="font-medium">Non-Member Visits:</span> {nonMemberVisits.length}
+                </div>
+                <div className="bg-gray-50 p-2 rounded">
+                  <span className="font-medium">Active in Gym:</span> {attendanceData.filter(a => a.status === 'checked-in').length}
+                </div>
+                <div className="bg-gray-50 p-2 rounded">
+                  <span className="font-medium">Today's Revenue:</span> Rp {operationalStats.todayRevenue.toLocaleString('id-ID')}
+                </div>
               </div>
             </div>
 
-            <QuickActions />
             <OperationalStats data={operationalStats} />
             
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -441,7 +1082,10 @@ export default function AdminOperasionalPage() {
               <FacilityStatus data={facilitiesData} />
             </div>
 
-            <AttendanceTracker data={attendanceData} />
+            <AttendanceTracker 
+              data={attendanceData} 
+              membersData={membersData} 
+            />
           </div>
         );
 
@@ -449,7 +1093,11 @@ export default function AdminOperasionalPage() {
         return <MemberManagement data={membersData} />;
 
       case 'attendance':
-        return <AttendanceTracker data={attendanceData} detailed />;
+        return <AttendanceTracker 
+          data={attendanceData} 
+          membersData={membersData} 
+          detailed 
+        />;
 
       case 'facilities':
         return <FacilityStatus data={facilitiesData} detailed />;
@@ -474,7 +1122,7 @@ export default function AdminOperasionalPage() {
               </div>
               <div>
                 <h1 className="text-xl font-bold text-gray-800">Admin Operasional</h1>
-                <p className="text-sm text-gray-600">HS Gym Management System</p>
+                <p className="text-sm text-gray-600">HS Gym Management System - Real-time</p>
               </div>
             </div>
             

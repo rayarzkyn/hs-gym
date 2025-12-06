@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 
 // Components
@@ -9,6 +9,7 @@ import RevenueChart from './components/RevenueChart';
 import ExpenseManager from './components/ExpenseManager';
 import ExportPanel from './components/ExportPanel';
 import NotificationCenter from './components/NotificationCenter';
+import DashboardSkeleton from './components/DashboardSkeleton';
 
 export default function AdminKeuangan() {
   const router = useRouter();
@@ -20,20 +21,24 @@ export default function AdminKeuangan() {
   const [error, setError] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>('');
+  const [componentLoading, setComponentLoading] = useState({
+    summary: true,
+    chart: true,
+    pending: true,
+    export: true
+  });
 
+  // Cek authentication dengan optimization
   useEffect(() => {
-    if (authChecked) return;
-
     const checkAuth = () => {
+      if (authChecked) return;
+
       const userData = localStorage.getItem('user');
       const staffUser = localStorage.getItem('staffUser');
       
-      console.log('🔄 AdminKeuangan - Checking auth...', {
-        hasUser: !!userData,
-        hasStaff: !!staffUser
-      });
-
       let userObj = null;
+      
+      // Check user data efficiently
       if (userData) {
         try {
           userObj = JSON.parse(userData);
@@ -49,142 +54,164 @@ export default function AdminKeuangan() {
       }
 
       if (!userObj) {
-        console.log('❌ No user found, redirecting to login');
         setAuthChecked(true);
         router.push('/login');
         return;
       }
       
-      // Check role - allow multiple finance roles
+      // Check role
       const allowedRoles = ['admin_keuangan', 'keuangan', 'admin'];
       if (!allowedRoles.includes(userObj.role)) {
-        console.log('❌ Invalid role:', userObj.role, 'redirecting to login');
         setAuthChecked(true);
         router.push('/login');
         return;
       }
       
-      console.log('✅ Auth valid, setting user:', userObj.role);
       setUser(userObj);
       setAuthChecked(true);
+      
+      // Load data in background after auth check
       loadDashboardData();
     };
 
-    const timer = setTimeout(checkAuth, 100);
-    return () => clearTimeout(timer);
+    // Use requestIdleCallback for better performance
+    if ('requestIdleCallback' in window) {
+      requestIdleCallback(() => checkAuth());
+    } else {
+      setTimeout(checkAuth, 0);
+    }
   }, [router, authChecked]);
 
-  // HAPUS INTERVAL - hanya load data sekali saat mount
-  // useEffect(() => {
-  //   if (!user) return;
+  // Refresh data only when tab becomes visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && user) {
+        // Small delay to ensure user interaction
+        setTimeout(() => {
+          loadDashboardData();
+        }, 1000);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     
-  //   // Setup interval untuk real-time updates - DIHAPUS
-  //   const interval = setInterval(() => {
-  //     loadDashboardData();
-  //   }, 30000); // Update every 30 seconds
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [user]);
 
-  //   return () => clearInterval(interval);
-  // }, [user]);
-
-  const loadDashboardData = async () => {
+  // Optimized loadDashboardData with parallel loading and independent states
+  const loadDashboardData = useCallback(async () => {
     if (!user) return;
     
     try {
       setLoading(true);
       setError(null);
+      setComponentLoading({
+        summary: true,
+        chart: true,
+        pending: true,
+        export: true
+      });
       
       console.log('🔄 Loading dashboard data...');
       
-      const [financialRes, pendingRes] = await Promise.all([
-        fetch('/api/admin/financial-reports?period=monthly'),
-        fetch('/api/admin/pending-payments')
+      // PARALLEL REQUESTS with better error handling
+      const [financialRes, pendingRes, chartRes, exportRes] = await Promise.allSettled([
+        fetch('/api/admin/financial-reports?period=monthly&fields=summary,chart,basic'),
+        fetch('/api/admin/pending-payments?limit=5&fields=id,amount,date,status'),
+        fetch('/api/admin/chart-data?period=monthly&simplify=true'),
+        fetch('/api/admin/export-options')
       ]);
-
-      console.log('📊 Financial response status:', financialRes.status);
-      console.log('💳 Pending response status:', pendingRes.status);
-
-      if (!financialRes.ok) {
-        const errorText = await financialRes.text();
-        console.error('❌ Financial reports error:', errorText);
-        throw new Error(`Laporan keuangan gagal: ${financialRes.status}`);
-      }
-
-      if (!pendingRes.ok) {
-        const errorText = await pendingRes.text();
-        console.error('❌ Pending payments error:', errorText);
-        throw new Error(`Data pembayaran pending gagal: ${pendingRes.status}`);
-      }
-
-      const financialContentType = financialRes.headers.get('content-type');
-      const pendingContentType = pendingRes.headers.get('content-type');
-
-      if (!financialContentType?.includes('application/json')) {
-        const text = await financialRes.text();
-        console.error('Non-JSON response from financial-reports:', text.substring(0, 200));
-        throw new Error('Server mengembalikan HTML bukan JSON');
-      }
-
-      if (!pendingContentType?.includes('application/json')) {
-        const text = await pendingRes.text();
-        console.error('Non-JSON response from pending-payments:', text.substring(0, 200));
-        throw new Error('Server mengembalikan HTML bukan JSON');
-      }
-
-      const [financialResult, pendingResult] = await Promise.all([
-        financialRes.json(),
-        pendingRes.json()
-      ]);
-
-      console.log('📈 Financial data received:', financialResult.success);
-      console.log('💸 Pending data received:', pendingResult.success);
-
-      if (financialResult.success) {
-        setFinancialData(financialResult.data);
-        setLastUpdate(new Date().toLocaleTimeString());
-      } else {
-        throw new Error(financialResult.error || 'Gagal memuat data keuangan');
-      }
       
-      // Add notification for pending payments
-      if (pendingResult.success && pendingResult.data && pendingResult.data.length > 0) {
-        const hasExistingNotification = notifications.some(n => n.type === 'pending_payments');
-        if (!hasExistingNotification) {
-          addNotification({
-            id: Date.now(),
-            type: 'pending_payments',
-            message: `${pendingResult.data.length} pembayaran menunggu verifikasi`,
-            timestamp: new Date(),
-            count: pendingResult.data.length,
-            priority: 'high'
-          });
+      // Process financial data
+      if (financialRes.status === 'fulfilled') {
+        const response = financialRes.value;
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success) {
+            setFinancialData(data.data);
+            setLastUpdate(new Date().toLocaleTimeString());
+            setComponentLoading(prev => ({ ...prev, summary: false }));
+            
+            // Success notification
+            addNotification({
+              id: Date.now(),
+              type: 'success',
+              message: 'Data keuangan berhasil dimuat',
+              timestamp: new Date(),
+              autoClose: true,
+              duration: 3000
+            });
+          }
         }
       }
-
-      // Add success notification for data load
-      addNotification({
-        id: Date.now() + 1,
-        type: 'info',
-        message: 'Data dashboard berhasil dimuat',
-        timestamp: new Date(),
-        autoClose: true
-      });
+      
+      // Process pending payments
+      if (pendingRes.status === 'fulfilled') {
+        const response = pendingRes.value;
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success && data.data?.length > 0) {
+            const hasExistingNotification = notifications.some(n => n.type === 'pending_payments');
+            if (!hasExistingNotification) {
+              addNotification({
+                id: Date.now(),
+                type: 'pending_payments',
+                message: `${data.data.length} pembayaran menunggu verifikasi`,
+                timestamp: new Date(),
+                count: data.data.length,
+                priority: 'high'
+              });
+            }
+          }
+          setComponentLoading(prev => ({ ...prev, pending: false }));
+        }
+      }
+      
+      // Process chart data
+      if (chartRes.status === 'fulfilled') {
+        setComponentLoading(prev => ({ ...prev, chart: false }));
+      }
+      
+      // Process export data
+      if (exportRes.status === 'fulfilled') {
+        setComponentLoading(prev => ({ ...prev, export: false }));
+      }
+      
+      // Check for errors
+      const errors = [];
+      if (financialRes.status === 'rejected') errors.push('Data keuangan');
+      if (pendingRes.status === 'rejected') errors.push('Pembayaran pending');
+      
+      if (errors.length > 0) {
+        throw new Error(`Gagal memuat: ${errors.join(', ')}`);
+      }
 
     } catch (error) {
       console.error('❌ Error loading dashboard data:', error);
-      setError(error instanceof Error ? error.message : 'Terjadi kesalahan saat memuat data');
+      const errorMessage = error instanceof Error ? error.message : 'Terjadi kesalahan saat memuat data';
+      setError(errorMessage);
       
-      // Add error notification
       addNotification({
         id: Date.now(),
         type: 'error',
-        message: 'Gagal memuat data dashboard',
+        message: errorMessage.substring(0, 100),
         timestamp: new Date(),
         isError: true
+      });
+      
+      // Set all components as loaded to show UI
+      setComponentLoading({
+        summary: false,
+        chart: false,
+        pending: false,
+        export: false
       });
     } finally {
       setLoading(false);
     }
-  };
+  }, [user, notifications]);
 
   const handleRefreshData = () => {
     loadDashboardData();
@@ -197,9 +224,15 @@ export default function AdminKeuangan() {
     router.push('/');
   };
 
-  const addNotification = (notification: any) => {
-    setNotifications(prev => [notification, ...prev.slice(0, 9)]);
-  };
+  const addNotification = useCallback((notification: any) => {
+    setNotifications(prev => {
+      // Prevent duplicates
+      if (prev.some(n => n.message === notification.message && n.type === notification.type)) {
+        return prev;
+      }
+      return [notification, ...prev.slice(0, 9)];
+    });
+  }, []);
 
   const removeNotification = (id: number) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
@@ -209,25 +242,21 @@ export default function AdminKeuangan() {
     setNotifications([]);
   };
 
-  // Show loading while checking auth
+  // Quick auth loading
   if (!authChecked) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-100 flex items-center justify-center">
-        <div className="bg-white rounded-2xl p-8 shadow-lg text-center">
+        <div className="bg-white rounded-2xl p-8 shadow-lg text-center animate-fade-in">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-500 mx-auto mb-4"></div>
-          <div className="text-lg font-semibold text-gray-700">Memeriksa authentication...</div>
+          <div className="text-lg font-semibold text-gray-700">Memeriksa otorisasi...</div>
+          <p className="text-sm text-gray-500 mt-2">Mohon tunggu sebentar</p>
         </div>
       </div>
     );
   }
 
-  // Show loading if no user (after auth check)
   if (!user) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-100 flex items-center justify-center">
-        <div className="text-xl">Redirecting...</div>
-      </div>
-    );
+    return null; // Will redirect in useEffect
   }
 
   const tabs = [
@@ -239,83 +268,91 @@ export default function AdminKeuangan() {
   ];
 
   const renderTabContent = () => {
-    if (loading && activeTab === 'dashboard') {
-      return (
-        <div className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {[1, 2, 3, 4].map(i => (
-              <div key={i} className="bg-white rounded-2xl p-6 shadow-lg animate-pulse">
-                <div className="h-4 bg-gray-200 rounded w-3/4 mb-4"></div>
-                <div className="h-8 bg-gray-200 rounded w-1/2"></div>
-              </div>
-            ))}
-          </div>
-          <div className="bg-white rounded-2xl p-6 shadow-lg animate-pulse">
-            <div className="h-6 bg-gray-200 rounded w-1/3 mb-4"></div>
-            <div className="h-64 bg-gray-200 rounded"></div>
-          </div>
-        </div>
-      );
-    }
-
-    if (error && activeTab === 'dashboard') {
-      return (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-          <div className="text-red-600 text-lg font-semibold mb-2">Error Memuat Data</div>
-          <p className="text-red-700 mb-4">{error}</p>
-          <div className="flex justify-center space-x-3">
-            <button
-              onClick={loadDashboardData}
-              className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition"
-            >
-              Coba Lagi
-            </button>
-            <button
-              onClick={() => setError(null)}
-              className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition"
-            >
-              Tutup
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    switch (activeTab) {
-      case 'dashboard':
-        return financialData ? (
-          <div className="space-y-6 animate-fade-in">
-            <div className="flex justify-between items-center">
-              <FinancialStats data={financialData} lastUpdate={lastUpdate} />
+    // Dashboard tab with optimized loading
+    if (activeTab === 'dashboard') {
+      if (loading && !financialData) {
+        return <DashboardSkeleton />;
+      }
+      
+      if (error) {
+        return (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center animate-fade-in">
+            <div className="text-red-600 text-lg font-semibold mb-2">Error Memuat Data</div>
+            <p className="text-red-700 mb-4">{error}</p>
+            <div className="flex justify-center space-x-3">
               <button
-                onClick={handleRefreshData}
-                className="ml-4 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 flex items-center space-x-2 transition-colors"
-                title="Refresh data"
+                onClick={loadDashboardData}
+                className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition font-medium"
               >
-                <span>🔄</span>
-                <span>Refresh</span>
+                Coba Lagi
+              </button>
+              <button
+                onClick={() => setError(null)}
+                className="bg-gray-600 text-white px-4 py-2 rounded-lg hover:bg-gray-700 transition font-medium"
+              >
+                Tutup
               </button>
             </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <RevenueChart data={financialData.chartData} />
-              <div className="space-y-6">
-                <PendingPayments preview onAction={addNotification} />
-                <ExportPanel preview />
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="text-center py-12">
-            <div className="text-gray-500 text-lg mb-2">Tidak ada data yang tersedia</div>
-            <button
-              onClick={loadDashboardData}
-              className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition"
-            >
-              Muat Data
-            </button>
           </div>
         );
+      }
 
+      return financialData ? (
+        <div className="space-y-6 animate-fade-in">
+          <div className="flex justify-between items-center">
+            <div className="flex-1">
+              <FinancialStats 
+                data={financialData} 
+                lastUpdate={lastUpdate}
+                isLoading={componentLoading.summary}
+              />
+            </div>
+            <button
+              onClick={handleRefreshData}
+              className="ml-4 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 flex items-center space-x-2 transition-colors font-medium shadow-sm"
+              title="Refresh data"
+              disabled={loading}
+            >
+              <span className={loading ? 'animate-spin' : ''}>🔄</span>
+              <span>{loading ? 'Memuat...' : 'Refresh'}</span>
+            </button>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <RevenueChart 
+              data={financialData.chartData} 
+              isLoading={componentLoading.chart}
+            />
+            <div className="space-y-6">
+              <PendingPayments 
+                preview 
+                onAction={addNotification}
+                isLoading={componentLoading.pending}
+              />
+              <ExportPanel 
+                preview 
+                isLoading={componentLoading.export}
+              />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="text-center py-12 animate-fade-in">
+          <div className="text-gray-500 text-lg mb-4">Data dashboard belum tersedia</div>
+          <button
+            onClick={loadDashboardData}
+            className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition font-medium shadow-md"
+          >
+            Muat Data Sekarang
+          </button>
+          <p className="text-sm text-gray-500 mt-4">
+            Klik tombol di atas untuk memuat data dashboard
+          </p>
+        </div>
+      );
+    }
+
+    // Other tabs
+    switch (activeTab) {
       case 'payments':
         return <PendingPayments onAction={addNotification} />;
 
@@ -332,7 +369,13 @@ export default function AdminKeuangan() {
           </div>
         ) : (
           <div className="text-center py-12">
-            <div className="text-gray-500">Tidak ada data laporan yang tersedia</div>
+            <div className="text-gray-500">Data laporan belum tersedia</div>
+            <button
+              onClick={loadDashboardData}
+              className="mt-4 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition"
+            >
+              Muat Data
+            </button>
           </div>
         );
 
@@ -348,35 +391,37 @@ export default function AdminKeuangan() {
     <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-100">
       {/* Header */}
       <nav className="bg-white shadow-lg sticky top-0 z-40">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex justify-between items-center">
+        <div className="container mx-auto px-4 sm:px-6 py-4">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-3 sm:space-y-0">
             <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-green-600 rounded-full flex items-center justify-center">
-                <span className="text-white font-bold">HS</span>
+              <div className="w-10 h-10 bg-green-600 rounded-full flex items-center justify-center flex-shrink-0">
+                <span className="text-white font-bold text-lg">HS</span>
               </div>
               <div>
                 <h1 className="text-xl font-bold text-gray-800">Admin Keuangan</h1>
-                <p className="text-sm text-gray-600">HS Gym Management System</p>
+                <p className="text-sm text-gray-600 truncate max-w-[200px] sm:max-w-none">
+                  HS Gym Management System
+                </p>
               </div>
             </div>
             
-            <div className="flex items-center space-x-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center space-y-3 sm:space-y-0 sm:space-x-4 w-full sm:w-auto">
               <NotificationCenter 
                 notifications={notifications}
                 onRemove={removeNotification}
                 onClearAll={clearAllNotifications}
               />
               
-              <div className="flex items-center space-x-3">
+              <div className="flex items-center justify-between w-full sm:w-auto space-x-3">
                 <div className="text-right">
-                  <span className="text-gray-700 block">
+                  <span className="text-gray-700 block text-sm sm:text-base">
                     Halo, <strong>{user.nama || user.username}</strong>
                   </span>
                   <span className="text-xs text-gray-500 capitalize">{user.role}</span>
                 </div>
                 <button 
                   onClick={logout}
-                  className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition font-medium"
+                  className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition font-medium text-sm sm:text-base whitespace-nowrap"
                 >
                   Logout
                 </button>
@@ -385,21 +430,23 @@ export default function AdminKeuangan() {
           </div>
 
           {/* Navigation Tabs */}
-          <div className="mt-4 flex space-x-1 overflow-x-auto">
-            {tabs.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition whitespace-nowrap ${
-                  activeTab === tab.id 
-                    ? 'bg-green-500 text-white shadow-md' 
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                <span className="text-lg">{tab.icon}</span>
-                <span className="font-medium">{tab.label}</span>
-              </button>
-            ))}
+          <div className="mt-4 flex overflow-x-auto pb-2 scrollbar-hide">
+            <div className="flex space-x-1">
+              {tabs.map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition whitespace-nowrap flex-shrink-0 ${
+                    activeTab === tab.id 
+                      ? 'bg-green-500 text-white shadow-md' 
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  <span className="text-lg">{tab.icon}</span>
+                  <span className="font-medium">{tab.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </nav>
@@ -417,6 +464,13 @@ export default function AdminKeuangan() {
         }
         .animate-fade-in {
           animation: fade-in 0.3s ease-out;
+        }
+        .scrollbar-hide {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+        .scrollbar-hide::-webkit-scrollbar {
+          display: none;
         }
       `}</style>
     </div>

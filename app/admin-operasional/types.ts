@@ -55,6 +55,8 @@ export interface Equipment {
 }
 
 export interface Member {
+  createdAt: string | undefined;
+  membershipPrice: number;
   id: string;
   nama: string;
   email: string;
@@ -112,3 +114,4 @@ export interface MonthlyDataItem {
   visitors: number;
   revenue: number;
 }
+

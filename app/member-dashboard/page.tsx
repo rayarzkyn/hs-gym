@@ -1,6 +1,106 @@
+// app/member-dashboard/page.tsx
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+
+// Import komponen-komponen
+import AttendanceHistory from './components/AttendanceHistory';
+import FacilityStatus from './components/FacilityStatus';
+import MemberDashboardStats from './components/MemberDashboardStats';
+import MembershipInfo from './components/MembershipInfo';
+
+// 🔥 Custom Hook untuk SSE
+// 🔥 PERBAIKAN: SSE Hook dengan error handling
+function useFacilitiesStream(userType: string) {
+  const [facilities, setFacilities] = useState<any[]>([]);
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let eventSource: EventSource | null = null;
+    let isMounted = true;
+    
+    const connectSSE = () => {
+      try {
+        if (!isMounted) return;
+        
+        console.log(`🔗 Connecting SSE for ${userType}...`);
+        
+        // 🔥 PERBAIKAN: Tambahkan cache busting
+        eventSource = new EventSource(`/api/facilities/stream?userType=${userType}&_t=${Date.now()}`);
+        
+        eventSource.onopen = () => {
+          if (!isMounted) return;
+          console.log(`✅ SSE Connected for ${userType}`);
+          setConnected(true);
+          setError(null);
+        };
+        
+        eventSource.onmessage = (event) => {
+          if (!isMounted) return;
+          
+          try {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'update') {
+              console.log(`📦 Received ${data.data.length} facilities via SSE`);
+              setFacilities(data.data);
+              setLastUpdate(new Date(data.timestamp));
+            } else if (data.type === 'connected') {
+              console.log(`📡 ${data.message}`);
+            } else if (data.type === 'error') {
+              console.error('SSE Server Error:', data.error);
+              setError(data.error);
+            }
+          } catch (error) {
+            console.error('❌ Error parsing SSE data:', error);
+          }
+        };
+        
+        eventSource.onerror = (error) => {
+          if (!isMounted) return;
+          
+          console.log(`⚠️ SSE Connection Error for ${userType}, will reconnect`);
+          setConnected(false);
+          setError('Connection lost. Reconnecting...');
+          
+          // Close existing connection
+          if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+          }
+          
+          // 🔥 PERBAIKAN: Tunggu 3 detik sebelum reconnect
+          setTimeout(() => {
+            if (isMounted) {
+              console.log('🔄 Attempting to reconnect SSE...');
+              connectSSE();
+            }
+          }, 3000);
+        };
+      } catch (error) {
+        console.error('❌ Failed to create SSE connection:', error);
+        if (isMounted) {
+          setError('Failed to connect to server');
+        }
+      }
+    };
+    
+    connectSSE();
+    
+    // Cleanup function
+    return () => {
+      console.log('🧹 Cleaning up SSE connection');
+      isMounted = false;
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, [userType]);
+  
+  return { facilities, lastUpdate, connected, error };
+}
 
 interface MemberData {
   id: string;
@@ -22,13 +122,82 @@ interface MemberData {
   riwayat_kunjungan: any[];
 }
 
+interface Facility {
+  id: string;
+  name: string;
+  status: string;
+  capacity: number;
+  currentMembers: number;
+  currentUsage: number;
+  equipment: Array<{
+    name: string;
+    count: number;
+    status: string;
+  }>;
+  peakHours: string[];
+  lastMaintenance: string;
+  nextMaintenance: string;
+  statusText?: string;
+  statusColor?: string;
+  isAvailable?: boolean;
+  usagePercentage?: number;
+  displayStatus?: string;
+}
+
+interface AttendanceHistory {
+  id: string;
+  date: string;
+  checkInTime: string;
+  checkOutTime: string | null;
+  facility: string | null;
+  duration: string | null;
+  status: string;
+}
+
+interface Transaction {
+  id: string;
+  date: string;
+  type: string;
+  description: string;
+  amount: number;
+  status: string;
+  paymentMethod: string;
+}
+
 export default function MemberDashboard() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [memberData, setMemberData] = useState<MemberData | null>(null);
+  const [facilities, setFacilities] = useState<Facility[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [showFacilityModal, setShowFacilityModal] = useState(false);
+  const [checkinLoading, setCheckinLoading] = useState(false);
+  const [isCheckedInToday, setIsCheckedInToday] = useState(false);
+  const [currentFacility, setCurrentFacility] = useState<string | null>(null);
+  const [attendanceId, setAttendanceId] = useState<string | null>(null);
+  
+  // State untuk tab-tab lain
+  const [attendanceHistory, setAttendanceHistory] = useState<AttendanceHistory[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // 🔥 Gunakan SSE Hook untuk real-time facilities
+  const { 
+    facilities: streamFacilities, 
+    lastUpdate: streamLastUpdate,
+    connected: streamConnected,
+    error: streamError 
+  } = useFacilitiesStream('member');
+
+  // 🔥 Update facilities data dari SSE
+  useEffect(() => {
+    if (streamFacilities.length > 0) {
+      console.log('🔄 Updating facilities from SSE:', streamFacilities.length);
+      setFacilities(streamFacilities);
+    }
+  }, [streamFacilities]);
 
   useEffect(() => {
     const userData = localStorage.getItem('user');
@@ -45,72 +214,334 @@ export default function MemberDashboard() {
     
     setUser(userObj);
     fetchMemberData(userObj.username);
+    checkTodayAttendance(userObj.username);
   }, [router]);
+
+useEffect(() => {
+  // Hanya atur loading state, data sudah diambil di fetchMemberData
+  if ((activeTab === 'history' && attendanceHistory.length === 0) || 
+      (activeTab === 'payment' && transactions.length === 0)) {
+    setHistoryLoading(true);
+  } else {
+    setHistoryLoading(false);
+  }
+}, [activeTab, attendanceHistory.length, transactions.length]);
+  const checkTodayAttendance = async (username: string) => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const response = await fetch(`/api/attendance/today?userId=${username}&date=${today}`);
+      
+      if (response.ok) {
+        const result = await response.json();
+        if (result.success && result.data) {
+          setIsCheckedInToday(result.data.status === 'checked_in');
+          setCurrentFacility(result.data.facility || null);
+          setAttendanceId(result.data.id || null);
+        }
+      }
+    } catch (error) {
+      console.error('Error checking attendance:', error);
+    }
+  };
 
   const fetchMemberData = async (username: string) => {
     try {
       setLoading(true);
       setError(null);
+      
       console.log('🔍 Fetching member data for:', username);
       
       const response = await fetch(`/api/member/data?memberId=${username}`);
       
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text();
+        console.error('API Error:', response.status, errorText);
+        throw new Error(`Gagal memuat data: ${response.status}`);
       }
 
       const result = await response.json();
-      console.log('📨 Member data response:', result);
       
       if (result.success) {
-        console.log('✅ Member data loaded:', result.data.nama);
+        console.log('✅ Member data received:', result.data.nama);
+        
         setMemberData(result.data);
+        
+        // 🔥 PERBAIKAN 1: Ambil riwayat kunjungan dari data API
+        if (result.data.riwayat_kunjungan && Array.isArray(result.data.riwayat_kunjungan)) {
+          const formattedAttendanceHistory = result.data.riwayat_kunjungan.map((visit: any) => {
+            // Format data dari API ke format yang diharapkan komponen
+            const visitDate = visit.tanggal ? (visit.tanggal.toDate ? visit.tanggal.toDate() : new Date(visit.tanggal)) : new Date();
+            
+            return {
+              id: visit.id || `visit_${Date.now()}_${Math.random()}`,
+              date: visitDate.toISOString().split('T')[0],
+              checkInTime: visit.waktu || visitDate.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+              checkOutTime: null,
+              facility: visit.facility || visit.area || 'Gym Area',
+              duration: visit.durasi || '2 jam',
+              status: visit.status || 'checked_out'
+            };
+          });
+          
+          console.log('📋 Formatted attendance history:', formattedAttendanceHistory.length, 'items');
+          setAttendanceHistory(formattedAttendanceHistory);
+        }
+        
+        // 🔥 PERBAIKAN 2: Ambil riwayat transaksi dari data API
+        if (result.data.riwayat_transaksi && Array.isArray(result.data.riwayat_transaksi)) {
+          const formattedTransactions = result.data.riwayat_transaksi.map((transaction: any) => {
+            const transDate = transaction.tanggal ? 
+              (transaction.tanggal.toDate ? transaction.tanggal.toDate() : new Date(transaction.tanggal)) : 
+              new Date();
+            
+            return {
+              id: transaction.id || `trans_${Date.now()}_${Math.random()}`,
+              date: transDate.toISOString().split('T')[0],
+              type: transaction.jenis || 'Membership Payment',
+              description: transaction.paket || `Pembayaran ${transaction.jenis || 'membership'}`,
+              amount: transaction.jumlah || transaction.amount || 0,
+              status: transaction.status || 'completed',
+              paymentMethod: transaction.metode_pembayaran || transaction.payment_method || 'Transfer'
+            };
+          });
+          
+          console.log('💳 Formatted transactions:', formattedTransactions.length, 'items');
+          setTransactions(formattedTransactions);
+        }
+        
       } else {
-        console.error('❌ Error fetching member data:', result.error);
         setError(result.error || 'Gagal memuat data member');
       }
     } catch (error) {
       console.error('❌ Error fetching member data:', error);
-      setError('Terjadi kesalahan saat memuat data member');
+      setError('Terjadi kesalahan saat memuat data member. Silakan refresh halaman.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleCheckin = async () => {
+  const handleDailyCheckin = async () => {
+    if (!user || !memberData) return;
+
     try {
-      console.log('🔄 Attempting checkin for:', user?.username);
+      setCheckinLoading(true);
       
-      const response = await fetch('/api/member/checkin', {
+      const response = await fetch('/api/attendance/checkin', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          memberId: user?.username
+          userId: user.username,
+          userName: memberData.nama,
+          type: 'member'
         }),
       });
 
-      // Cek jika response OK
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ HTTP error:', response.status, errorText);
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
       const result = await response.json();
-      console.log('📨 Checkin response:', result);
 
       if (result.success) {
-        alert(result.message || 'Check-in berhasil! Selamat berolahraga 🏋️‍♂️');
-        // Refresh data
-        fetchMemberData(user?.username);
+        alert('✅ Check-in harian berhasil! Sekarang Anda bisa memilih fasilitas.');
+        setIsCheckedInToday(true);
+        setAttendanceId(result.data?.id || null);
       } else {
         alert('Gagal check-in: ' + result.error);
       }
     } catch (error) {
       console.error('Check-in error:', error);
       alert('Terjadi kesalahan saat check-in. Silakan coba lagi.');
+    } finally {
+      setCheckinLoading(false);
+    }
+  };
+
+  const handleSelectFacility = async (facilityId: string, facilityName: string) => {
+    if (!user || !attendanceId) return;
+
+    try {
+      setCheckinLoading(true);
+      
+      const response = await fetch('/api/attendance/select-facility', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          attendanceId: attendanceId,
+          facility: facilityName,
+          userId: user.username
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        alert(`✅ Berhasil memilih ${facilityName}! Selamat berolahraga 🏋️‍♂️`);
+        setCurrentFacility(facilityName);
+        setShowFacilityModal(false);
+        
+        console.log('✅ Facility selected, waiting for SSE update...');
+      } else {
+        alert('Gagal memilih fasilitas: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Select facility error:', error);
+      alert('Terjadi kesalahan. Silakan coba lagi.');
+    } finally {
+      setCheckinLoading(false);
+    }
+  };
+
+  const handleCheckout = async () => {
+  if (!user || !attendanceId) return;
+
+  try {
+    const response = await fetch('/api/attendance/checkout', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        attendanceId: attendanceId,
+        userId: user.username
+      }),
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      alert('✅ Check-out berhasil! Sampai jumpa besok! 👋');
+      setIsCheckedInToday(false);
+      setCurrentFacility(null);
+      setAttendanceId(null);
+      
+      // 🔥 FORCE REFRESH FACILITIES DATA
+      setTimeout(() => {
+        fetch('/api/facilities?userType=member')
+          .then(res => res.json())
+          .then(result => {
+            if (result.success) {
+              setFacilities(result.data);
+              console.log('🔄 Facilities manually refreshed after checkout');
+            }
+          });
+      }, 1000);
+    } else {
+      alert('Gagal check-out: ' + result.error);
+    }
+  } catch (error) {
+    console.error('Check-out error:', error);
+    alert('Terjadi kesalahan saat check-out.');
+  }
+};
+
+  const handleExtendMembership = async (plan: string) => {
+    if (!user || !memberData) {
+      alert('Data member tidak ditemukan');
+      return;
+    }
+
+    const planPrices: any = {
+      'Bulanan': 120000,
+      'Triwulan': 300000,
+      'Semester': 550000,
+      'Tahunan': 1000000
+    };
+
+    const price = planPrices[plan] || 120000;
+
+    if (!confirm(`Anda akan memperpanjang membership ${plan} seharga ${formatCurrency(price)}. Lanjutkan?`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/member/extend-membership', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          memberId: user.username,
+          plan: plan,
+          price: price,
+          paymentMethod: 'transfer'
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        alert('✅ Permintaan perpanjangan berhasil! Silakan lakukan pembayaran.');
+        // Refresh data member
+        fetchMemberData(user.username);
+        setActiveTab('payment');
+      } else {
+        alert('Gagal: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Extend membership error:', error);
+      alert('Terjadi kesalahan. Silakan coba lagi.');
+    }
+  };
+
+  const getCapacityStatus = (facility: Facility) => {
+    if (facility.statusText) {
+      const colorMap: Record<string, any> = {
+        'Sejuk': { color: 'bg-green-500', textColor: 'text-green-700', bgColor: 'bg-green-50' },
+        'Sedang': { color: 'bg-blue-500', textColor: 'text-blue-700', bgColor: 'bg-blue-50' },
+        'Ramai': { color: 'bg-yellow-500', textColor: 'text-yellow-700', bgColor: 'bg-yellow-50' },
+        'Penuh': { color: 'bg-red-500', textColor: 'text-red-700', bgColor: 'bg-red-50' },
+        'Maintenance': { color: 'bg-gray-500', textColor: 'text-gray-700', bgColor: 'bg-gray-100' }
+      };
+      
+      const statusConfig = colorMap[facility.statusText] || colorMap['Sejuk'];
+      return {
+        text: facility.statusText,
+        color: statusConfig.color,
+        textColor: statusConfig.textColor,
+        bgColor: statusConfig.bgColor
+      };
+    }
+    
+    const usagePercentage = facility.usagePercentage || Math.round((facility.currentMembers / facility.capacity) * 100);
+    
+    if (facility.status === 'maintenance') {
+      return { 
+        text: 'Maintenance', 
+        color: 'bg-gray-500', 
+        textColor: 'text-gray-700',
+        bgColor: 'bg-gray-100'
+      };
+    }
+    
+    if (usagePercentage >= 90) {
+      return { 
+        text: 'Penuh', 
+        color: 'bg-red-500', 
+        textColor: 'text-red-700',
+        bgColor: 'bg-red-50'
+      };
+    } else if (usagePercentage >= 70) {
+      return { 
+        text: 'Ramai', 
+        color: 'bg-yellow-500', 
+        textColor: 'text-yellow-700',
+        bgColor: 'bg-yellow-50'
+      };
+    } else if (usagePercentage >= 40) {
+      return { 
+        text: 'Sedang', 
+        color: 'bg-blue-500', 
+        textColor: 'text-blue-700',
+        bgColor: 'bg-blue-50'
+      };
+    } else {
+      return { 
+        text: 'Sejuk', 
+        color: 'bg-green-500', 
+        textColor: 'text-green-700',
+        bgColor: 'bg-green-50'
+      };
     }
   };
 
@@ -132,19 +563,6 @@ export default function MemberDashboard() {
     return `${Math.ceil(days / 30)} bulan`;
   };
 
-  const getProgressPercentage = (days: number): number => {
-    const totalDays = memberData?.membership_plan === 'Bulanan' ? 30 :
-                     memberData?.membership_plan === 'Triwulan' ? 90 :
-                     memberData?.membership_plan === 'Semester' ? 180 : 365;
-    return Math.max(0, Math.min(100, ((totalDays - days) / totalDays) * 100));
-  };
-
-  const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    router.push('/');
-  };
-
   const formatDate = (dateInput: string | Date) => {
     let date;
     if (dateInput instanceof Date) {
@@ -162,19 +580,27 @@ export default function MemberDashboard() {
     });
   };
 
-  const formatDateTime = (dateInput: string | Date) => {
+  const formatTime = (dateInput: string | Date) => {
     let date;
     if (dateInput instanceof Date) {
       date = dateInput;
     } else if (typeof dateInput === 'string') {
       date = new Date(dateInput);
     } else {
-      return 'Tanggal tidak valid';
+      return 'Waktu tidak valid';
     }
     
-    return date.toLocaleString('id-ID', {
+    return date.toLocaleTimeString('id-ID', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
+
+  const formatDateTime = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('id-ID', {
       day: 'numeric',
-      month: 'long',
+      month: 'short',
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit'
@@ -184,8 +610,249 @@ export default function MemberDashboard() {
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('id-ID', {
       style: 'currency',
-      currency: 'IDR'
+      currency: 'IDR',
+      minimumFractionDigits: 0
     }).format(amount);
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status.toLowerCase()) {
+      case 'success':
+      case 'completed':
+      case 'checked_out':
+        return 'bg-green-100 text-green-800';
+      case 'pending':
+      case 'checked_in':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'failed':
+      case 'cancelled':
+        return 'bg-red-100 text-red-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    router.push('/');
+  };
+
+  const renderFacilityModal = () => {
+    if (!showFacilityModal) return null;
+
+    const availableFacilities = facilities.filter(f => f.isAvailable !== false && f.status !== 'maintenance');
+    const fullFacilities = facilities.filter(f => f.statusText === 'Penuh');
+    const maintenanceFacilities = facilities.filter(f => f.status === 'maintenance');
+
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+          <div className="p-6">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-2xl font-bold">Pilih Fasilitas</h2>
+              <button
+                onClick={() => setShowFacilityModal(false)}
+                className="text-gray-500 hover:text-gray-700 text-2xl"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center">
+                  <div className="w-3 h-3 bg-green-500 rounded-full mr-2"></div>
+                  <span className="text-sm">Tersedia</span>
+                </div>
+                <div className="flex items-center">
+                  <div className="w-3 h-3 bg-yellow-500 rounded-full mr-2"></div>
+                  <span className="text-sm">Ramai</span>
+                </div>
+                <div className="flex items-center">
+                  <div className="w-3 h-3 bg-red-500 rounded-full mr-2"></div>
+                  <span className="text-sm">Penuh</span>
+                </div>
+                <div className="flex items-center">
+                  <div className="w-3 h-3 bg-gray-500 rounded-full mr-2"></div>
+                  <span className="text-sm">Maintenance</span>
+                </div>
+              </div>
+              <div className="text-sm text-gray-500">
+                Update: {streamLastUpdate.toLocaleTimeString('id-ID')}
+                {streamError && <span className="text-red-500 ml-2">⚠️</span>}
+              </div>
+            </div>
+
+            {availableFacilities.length > 0 && (
+              <div className="mb-8">
+                <h3 className="text-lg font-semibold mb-4 text-green-600">
+                  ✅ Fasilitas Tersedia ({availableFacilities.length})
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {availableFacilities.map((facility) => {
+                    const capacityStatus = getCapacityStatus(facility);
+                    const usagePercentage = facility.usagePercentage || Math.round((facility.currentMembers / facility.capacity) * 100);
+                    
+                    return (
+                      <div key={facility.id} className="border rounded-xl p-4 hover:shadow-md transition">
+                        <div className="flex justify-between items-start mb-3">
+                          <div>
+                            <div className="flex items-center space-x-2 mb-1">
+                              <h4 className="font-bold text-lg">{facility.name}</h4>
+                              <span className={`px-2 py-1 rounded-full text-xs font-semibold ${capacityStatus.textColor} ${capacityStatus.color.replace('bg-', 'bg-')} bg-opacity-20`}>
+                                LIVE
+                              </span>
+                            </div>
+                            <p className="text-gray-600">
+                              {facility.currentMembers}/{facility.capacity} orang • {capacityStatus.text}
+                            </p>
+                          </div>
+                          <span className={`px-3 py-1 rounded-full text-sm font-bold text-white ${capacityStatus.color}`}>
+                            {usagePercentage}%
+                          </span>
+                        </div>
+                        
+                        <div className="mb-3">
+                          <div className="flex justify-between text-sm mb-1">
+                            <span>Kapasitas</span>
+                            <span>Real-time</span>
+                          </div>
+                          <div className="w-full bg-gray-200 rounded-full h-2">
+                            <div 
+                              className={`h-2 rounded-full ${capacityStatus.color}`}
+                              style={{ width: `${usagePercentage}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                        
+                        <div className="text-sm text-gray-600 mb-3">
+                          <span className="font-medium">🕐 Jam sibuk:</span>{' '}
+                          {facility.peakHours.join(', ')}
+                        </div>
+                        
+                        <div className="mb-4">
+                          <p className="text-sm font-medium mb-2">Equipment:</p>
+                          <div className="flex flex-wrap gap-2">
+                            {facility.equipment.slice(0, 3).map((eq, idx) => (
+                              <span key={idx} className="text-xs bg-gray-100 px-2 py-1 rounded">
+                                {eq.name} ({eq.count} unit)
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                        
+                        <div className="text-xs text-gray-500 mb-4">
+                          Maintenance terakhir: {formatDate(facility.lastMaintenance)} • 
+                          Next: {formatDate(facility.nextMaintenance)}
+                        </div>
+                        
+                        <button
+                          onClick={() => handleSelectFacility(facility.id, facility.name)}
+                          disabled={checkinLoading}
+                          className="w-full bg-green-500 text-white py-2 px-4 rounded-lg hover:bg-green-600 transition font-semibold disabled:opacity-50"
+                        >
+                          {checkinLoading ? 'Memproses...' : `Pilih ${facility.name}`}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {fullFacilities.length > 0 && (
+              <div className="mb-8">
+                <h3 className="text-lg font-semibold mb-4 text-red-600">
+                  ⚠️ Fasilitas Penuh ({fullFacilities.length})
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {fullFacilities.map((facility) => {
+                    const usagePercentage = facility.usagePercentage || Math.round((facility.currentMembers / facility.capacity) * 100);
+                    
+                    return (
+                      <div key={facility.id} className="border rounded-xl p-4 bg-red-50">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <div className="flex items-center space-x-2 mb-1">
+                              <h4 className="font-bold text-lg">{facility.name}</h4>
+                              <span className="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs font-semibold">
+                                PENUH
+                              </span>
+                            </div>
+                            <p className="text-red-600">
+                              {facility.currentMembers}/{facility.capacity} orang
+                            </p>
+                          </div>
+                          <span className="px-3 py-1 bg-red-500 text-white rounded-full text-sm font-bold">
+                            {usagePercentage}%
+                          </span>
+                        </div>
+                        <p className="text-sm text-red-500 mt-2">
+                          Silakan pilih fasilitas lain atau coba lagi nanti
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {maintenanceFacilities.length > 0 && (
+              <div>
+                <h3 className="text-lg font-semibold mb-4 text-gray-600">
+                  🔧 Dalam Perawatan ({maintenanceFacilities.length})
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {maintenanceFacilities.map((facility) => (
+                    <div key={facility.id} className="border rounded-xl p-4 bg-gray-100">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h4 className="font-bold text-lg">{facility.name}</h4>
+                          <p className="text-gray-600">Sedang dalam perawatan</p>
+                        </div>
+                        <span className="px-3 py-1 bg-gray-500 text-white rounded-full text-sm font-bold">
+                          MAINTENANCE
+                        </span>
+                      </div>
+                      <div className="mt-2 text-sm text-gray-500">
+                        <p>Estimasi selesai: {formatDate(facility.nextMaintenance)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {availableFacilities.length === 0 && fullFacilities.length === 0 && maintenanceFacilities.length === 0 && (
+              <div className="text-center py-8">
+                <div className="text-6xl mb-4">🏋️</div>
+                <p className="text-gray-500">Tidak ada fasilitas tersedia saat ini</p>
+              </div>
+            )}
+
+            <div className="mt-8 pt-6 border-t">
+              <div className="flex justify-between">
+                <button
+                  onClick={() => setShowFacilityModal(false)}
+                  className="border border-gray-300 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-50 transition font-semibold"
+                >
+                  Tutup
+                </button>
+                {isCheckedInToday && (
+                  <button
+                    onClick={handleCheckout}
+                    className="bg-red-500 text-white px-6 py-3 rounded-lg hover:bg-red-600 transition font-semibold"
+                  >
+                    🏃 Check-out
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   if (!user || loading) {
@@ -201,6 +868,7 @@ export default function MemberDashboard() {
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: '🏠' },
+    { id: 'facilities', label: 'Fasilitas', icon: '🏋️' },
     { id: 'profile', label: 'Profile', icon: '👤' },
     { id: 'membership', label: 'Membership', icon: '🎯' },
     { id: 'history', label: 'Riwayat', icon: '📊' },
@@ -224,100 +892,67 @@ export default function MemberDashboard() {
 
     const planInfo = getMembershipPlanInfo(memberData.membership_plan);
     const remainingDaysText = getRemainingDaysText(memberData.sisa_hari);
-    const progressPercentage = getProgressPercentage(memberData.sisa_hari);
 
     switch (activeTab) {
       case 'dashboard':
         return (
           <div className="space-y-6">
-            {/* Welcome Section */}
-            <div className="bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl p-6 text-white">
+            <div className={`rounded-2xl p-6 text-white ${
+              isCheckedInToday 
+                ? 'bg-gradient-to-r from-green-500 to-emerald-600' 
+                : 'bg-gradient-to-r from-blue-500 to-purple-600'
+            }`}>
               <h1 className="text-2xl font-bold mb-2">
-                Selamat Datang, {memberData.nama}! 👋
+                {isCheckedInToday ? 'Selamat Berolahraga!' : 'Selamat Datang,'} {memberData.nama}! 👋
               </h1>
-              <p className="opacity-90">Semangat berolahraga hari ini!</p>
+              <p className="opacity-90">
+                {isCheckedInToday 
+                  ? `Anda sudah check-in hari ini ${currentFacility ? 'di ' + currentFacility : ''}`
+                  : 'Semangat berolahraga hari ini!'}
+              </p>
             </div>
 
-            {/* Stats Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {/* Membership Card */}
-              <div className="bg-white rounded-xl p-6 shadow-lg border">
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <p className="text-gray-600 text-sm">Paket Membership</p>
-                    <p className="text-xl font-bold text-green-600 truncate">
-                      {memberData.membership_plan}
-                    </p>
-                  </div>
-                  <div className="text-2xl">🎯</div>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-gray-600">Sisa waktu:</span>
-                    <span className="font-semibold text-blue-600">{remainingDaysText}</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div 
-                      className="bg-green-500 h-2 rounded-full transition-all duration-300" 
-                      style={{ width: `${progressPercentage}%` }}
-                    ></div>
-                  </div>
-                  <div className="flex justify-between text-xs text-gray-500">
-                    <span>{memberData.sisa_hari} hari</span>
-                    <span>
-                      {memberData.membership_plan === 'Bulanan' ? '30' :
-                       memberData.membership_plan === 'Triwulan' ? '90' :
-                       memberData.membership_plan === 'Semester' ? '180' : '365'} hari
-                    </span>
-                  </div>
-                </div>
-              </div>
+            <MemberDashboardStats 
+              data={{
+                totalVisits: memberData.total_kunjungan || 0,
+                monthlyVisits: memberData.kunjungan_bulan_ini || 0,
+                averageDuration: 45,
+                favoriteFacility: attendanceHistory.length > 0 
+                  ? attendanceHistory[0]?.facility || 'Area Cardio' 
+                  : 'Area Cardio',
+                lastVisit: attendanceHistory.length > 0 
+                  ? formatDate(attendanceHistory[0].date) 
+                  : 'Belum pernah',
+                membershipDaysLeft: memberData.sisa_hari || 0,
+                attendanceStreak: 3
+              }}
+            />
 
-              <div className="bg-white rounded-xl p-6 shadow-lg border">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-gray-600 text-sm">Kunjungan Bulan Ini</p>
-                    <p className="text-2xl font-bold text-blue-600">
-                      {memberData.kunjungan_bulan_ini}x
-                    </p>
-                  </div>
-                  <div className="text-3xl">🏋️</div>
-                </div>
-                <p className="text-sm text-gray-600 mt-2">
-                  Total: {memberData.total_kunjungan} kunjungan
-                </p>
-              </div>
-
-              <div className="bg-white rounded-xl p-6 shadow-lg border">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-gray-600 text-sm">Masa Aktif</p>
-                    <p className="text-lg font-bold text-orange-600">
-                      {formatDate(memberData.masa_aktif)}
-                    </p>
-                  </div>
-                  <div className="text-3xl">⏰</div>
-                </div>
-                <p className="text-sm text-gray-600 mt-2">
-                  Bergabung: {formatDate(memberData.tanggal_daftar)}
-                </p>
-              </div>
-            </div>
-
-            {/* Quick Actions */}
             <div className="bg-white rounded-xl p-6 shadow-lg border">
               <h2 className="text-xl font-bold mb-4">Quick Actions</h2>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <button
-                  onClick={handleCheckin}
-                  className="bg-green-500 text-white py-4 px-6 rounded-lg hover:bg-green-600 transition font-semibold text-lg flex items-center justify-center space-x-2"
-                >
-                  <span>📝</span>
-                  <span>Check-in Sekarang</span>
-                </button>
+                {!isCheckedInToday ? (
+                  <button
+                    onClick={handleDailyCheckin}
+                    disabled={checkinLoading}
+                    className="bg-green-500 text-white py-4 px-6 rounded-lg hover:bg-green-600 transition font-semibold text-lg flex items-center justify-center space-x-2"
+                  >
+                    <span>🎫</span>
+                    <span>{checkinLoading ? 'Memproses...' : 'Check-in Harian'}</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setShowFacilityModal(true)}
+                    className="bg-blue-500 text-white py-4 px-6 rounded-lg hover:bg-blue-600 transition font-semibold text-lg flex items-center justify-center space-x-2"
+                  >
+                    <span>🏋️</span>
+                    <span>{currentFacility ? 'Ganti Fasilitas' : 'Pilih Fasilitas'}</span>
+                  </button>
+                )}
+                
                 <button 
-                  onClick={() => setActiveTab('payment')}
-                  className="bg-blue-500 text-white py-4 px-6 rounded-lg hover:bg-blue-600 transition font-semibold text-lg flex items-center justify-center space-x-2"
+                  onClick={() => setActiveTab('membership')}
+                  className="bg-purple-500 text-white py-4 px-6 rounded-lg hover:bg-purple-600 transition font-semibold text-lg flex items-center justify-center space-x-2"
                 >
                   <span>💳</span>
                   <span>Perpanjang Membership</span>
@@ -325,107 +960,90 @@ export default function MemberDashboard() {
               </div>
             </div>
 
-            {/* Recent Activity */}
-            <div className="bg-white rounded-xl p-6 shadow-lg border">
-              <h2 className="text-xl font-bold mb-4">Aktivitas Terbaru</h2>
-              {memberData.riwayat_kunjungan && memberData.riwayat_kunjungan.length > 0 ? (
-                <div className="space-y-3">
-                  {memberData.riwayat_kunjungan.slice(0, 3).map((visit, index) => (
-                    <div key={visit.id || `visit-${index}`} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
-                          <span className="text-blue-600">🏃</span>
-                        </div>
-                        <div>
-                          <p className="font-semibold">Kunjungan Gym</p>
-                          <p className="text-sm text-gray-600">
-                            {formatDateTime(visit.tanggal)} • {visit.durasi}
-                          </p>
-                        </div>
-                      </div>
-                      <span className="bg-green-100 text-green-800 px-2 py-1 rounded-full text-sm">
-                        Selesai
-                      </span>
-                    </div>
-                  ))}
+            <FacilityStatus 
+              facilities={facilities.slice(0, 3)}
+              currentFacility={currentFacility}
+              onSelectFacility={handleSelectFacility}
+              loading={facilities.length === 0 && streamConnected}
+            />
+
+            <AttendanceHistory 
+              data={attendanceHistory.slice(0, 5)}
+              loading={historyLoading}
+            />
+
+            {isCheckedInToday && (
+              <div className="bg-white rounded-xl p-6 shadow-lg border">
+                <div className="text-center">
+                  <p className="text-gray-600 mb-4">
+                    Selesai berolahraga? Lakukan check-out untuk mencatat durasi
+                  </p>
+                  <button
+                    onClick={handleCheckout}
+                    className="bg-red-500 text-white px-6 py-3 rounded-lg hover:bg-red-600 transition font-semibold"
+                  >
+                    🏃 Check-out dari Gym
+                  </button>
                 </div>
-              ) : (
-                <p className="text-gray-500 text-center py-4">
-                  Belum ada aktivitas terbaru. Lakukan check-in pertama Anda!
-                </p>
-              )}
-            </div>
+              </div>
+            )}
           </div>
+        );
+
+      case 'facilities':
+        return (
+          <FacilityStatus 
+            facilities={facilities}
+            currentFacility={currentFacility}
+            onSelectFacility={handleSelectFacility}
+            detailed={true}
+            loading={facilities.length === 0 && streamConnected}
+          />
         );
 
       case 'profile':
         return (
           <div className="bg-white rounded-xl p-6 shadow-lg border">
-            <h2 className="text-2xl font-bold mb-6">Profile Member</h2>
+            <h2 className="text-xl font-bold mb-6">👤 Profil Member</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <h3 className="text-lg font-semibold mb-4">Informasi Pribadi</h3>
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-sm text-gray-600">Nomor Member</label>
-                    <p className="font-semibold">{memberData.nomor_member}</p>
-                  </div>
-                  <div>
-                    <label className="text-sm text-gray-600">Nama Lengkap</label>
-                    <p className="font-semibold">{memberData.nama}</p>
-                  </div>
-                  <div>
-                    <label className="text-sm text-gray-600">Email</label>
-                    <p className="font-semibold">{memberData.email}</p>
-                  </div>
-                  <div>
-                    <label className="text-sm text-gray-600">Telepon</label>
-                    <p className="font-semibold">{memberData.telepon}</p>
-                  </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-1">Nama Lengkap</label>
+                  <div className="p-3 bg-gray-50 rounded-lg border">{memberData.nama}</div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-1">Email</label>
+                  <div className="p-3 bg-gray-50 rounded-lg border">{memberData.email}</div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-1">Nomor Telepon</label>
+                  <div className="p-3 bg-gray-50 rounded-lg border">{memberData.telepon}</div>
                 </div>
               </div>
-              
-              <div>
-                <h3 className="text-lg font-semibold mb-4">Informasi Membership</h3>
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-sm text-gray-600">Tipe Membership</label>
-                    <p className="font-semibold capitalize">{memberData.membership_type}</p>
-                  </div>
-                  <div>
-                    <label className="text-sm text-gray-600">Paket</label>
-                    <p className="font-semibold">{memberData.membership_plan}</p>
-                  </div>
-                  <div>
-                    <label className="text-sm text-gray-600">Status</label>
-                    <span className={`px-2 py-1 rounded-full text-sm font-semibold ${
-                      memberData.status === 'active' 
-                        ? 'bg-green-100 text-green-800' 
-                        : 'bg-red-100 text-red-800'
-                    }`}>
-                      {memberData.status}
-                    </span>
-                  </div>
-                  <div>
-                    <label className="text-sm text-gray-600">Tanggal Bergabung</label>
-                    <p className="font-semibold">{formatDate(memberData.tanggal_daftar)}</p>
-                  </div>
-                  <div>
-                    <label className="text-sm text-gray-600">Masa Aktif Hingga</label>
-                    <p className="font-semibold">{formatDate(memberData.masa_aktif)}</p>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-1">Alamat</label>
+                  <div className="p-3 bg-gray-50 rounded-lg border">{memberData.alamat}</div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-1">ID Member</label>
+                  <div className="p-3 bg-gray-50 rounded-lg border font-mono">{memberData.nomor_member}</div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-600 mb-1">Status</label>
+                  <div className={`p-3 rounded-lg border font-medium ${
+                    memberData.status === 'active' 
+                      ? 'bg-green-100 text-green-800 border-green-200' 
+                      : 'bg-red-100 text-red-800 border-red-200'
+                  }`}>
+                    {memberData.status === 'active' ? 'AKTIF' : 'NON-AKTIF'}
                   </div>
                 </div>
               </div>
             </div>
-            
-            <div className="mt-6">
-              <h3 className="text-lg font-semibold mb-4">Alamat</h3>
-              <p className="text-gray-700">{memberData.alamat}</p>
-            </div>
-
-            <div className="mt-6 pt-6 border-t">
-              <button className="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition font-semibold">
-                ✏️ Edit Profile
+            <div className="mt-8">
+              <button className="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition font-medium">
+                Edit Profil
               </button>
             </div>
           </div>
@@ -433,384 +1051,208 @@ export default function MemberDashboard() {
 
       case 'membership':
         return (
-          <div className="space-y-6">
-            {/* Current Membership Card */}
-            <div className="bg-white rounded-xl p-6 shadow-lg border">
-              <h2 className="text-2xl font-bold mb-6">Paket Membership Anda</h2>
-              
-              <div className={`bg-gradient-to-r ${planInfo.color} rounded-2xl p-6 text-white`}>
-                <div className="flex justify-between items-start">
-                  <div>
-                    <h3 className="text-2xl font-bold mb-2 truncate">{memberData.membership_plan}</h3>
-                    <p className="text-white/90 mb-4">{planInfo.duration}</p>
-                    <div className="text-3xl font-bold">
-                      {formatCurrency(memberData.membership_price)}
-                    </div>
-                    {memberData.membership_plan !== 'Bulanan' && (
-                      <p className="text-white/80 text-sm mt-2">
-                        {formatCurrency(memberData.membership_price / 
-                          (memberData.membership_plan === 'Triwulan' ? 3 : 
-                           memberData.membership_plan === 'Semester' ? 6 : 12))}/bulan
-                      </p>
-                    )}
-                  </div>
-                  <div className="text-right">
-                    <span className="bg-white/20 px-3 py-1 rounded-full text-sm font-semibold">
-                      Aktif
-                    </span>
-                    <div className="mt-4">
-                      <p className="text-sm">Sisa</p>
-                      <p className="text-xl font-bold">{remainingDaysText}</p>
-                    </div>
-                  </div>
-                </div>
-                
-                {/* Progress Bar */}
-                <div className="mt-4">
-                  <div className="flex justify-between text-sm mb-1">
-                    <span>Progress</span>
-                    <span>{Math.round(progressPercentage)}%</span>
-                  </div>
-                  <div className="w-full bg-white/30 rounded-full h-2">
-                    <div 
-                      className="bg-white h-2 rounded-full transition-all duration-300" 
-                      style={{ width: `${progressPercentage}%` }}
-                    ></div>
-                  </div>
-                </div>
-                
-                <div className="mt-6 pt-4 border-t border-white/20">
-                  <p className="font-semibold mb-2">Benefit yang Anda dapatkan:</p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-                    {memberData.membership_plan === 'Bulanan' && (
-                      <>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Akses semua equipment</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Kartu member digital</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Free WiFi</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Locker harian</span>
-                        </div>
-                      </>
-                    )}
-                    {memberData.membership_plan === 'Triwulan' && (
-                      <>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Semua benefit bulanan</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>1x konsultasi trainer</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Progress tracking</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Special locker</span>
-                        </div>
-                      </>
-                    )}
-                    {memberData.membership_plan === 'Semester' && (
-                      <>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Semua benefit triwulan</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>2x konsultasi trainer</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Nutrition guide</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Premium locker</span>
-                        </div>
-                      </>
-                    )}
-                    {memberData.membership_plan === 'Tahunan' && (
-                      <>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>Semua benefit semester</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>4x konsultasi trainer</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>VIP nutrition guide</span>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="mr-2">✓</span>
-                          <span>VIP locker permanen</span>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-              
-              <div className="mt-6 flex gap-4 flex-wrap">
-                <button className="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition font-semibold">
-                  💳 Perpanjang Membership
-                </button>
-                <button className="border border-gray-300 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-50 transition font-semibold">
-                  🔄 Upgrade Paket
-                </button>
-              </div>
-            </div>
-
-            {/* Membership History */}
-            <div className="bg-white rounded-xl p-6 shadow-lg border">
-              <h3 className="text-xl font-bold mb-4">Riwayat Membership</h3>
-              {memberData.riwayat_transaksi && 
-               memberData.riwayat_transaksi.filter((t: any) => t.jenis?.includes('Membership')).length > 0 ? (
-                <div className="space-y-4">
-                  {memberData.riwayat_transaksi
-                    .filter((t: any) => t.jenis?.includes('Membership'))
-                    .map((transaction: any, index: number) => (
-                      <div key={transaction.id || `trans-membership-${index}`} className="flex items-center justify-between p-4 border rounded-lg">
-                        <div className="flex items-center space-x-4">
-                          <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
-                            <span className="text-green-600 text-xl">🔄</span>
-                          </div>
-                          <div>
-                            <p className="font-semibold">{transaction.jenis}</p>
-                            <p className="text-sm text-gray-600">
-                              {formatDateTime(transaction.tanggal)} • {transaction.paket || memberData.membership_plan}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="font-bold text-lg">{formatCurrency(transaction.jumlah)}</p>
-                          <span className="bg-green-100 text-green-800 px-2 py-1 rounded-full text-sm">
-                            {transaction.status || 'completed'}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              ) : (
-                <div className="text-center py-8">
-                  <div className="text-4xl mb-2">📝</div>
-                  <p className="text-gray-500">Belum ada riwayat membership</p>
-                </div>
-              )}
-            </div>
-          </div>
+          <MembershipInfo 
+            memberData={memberData}
+            onExtendMembership={handleExtendMembership}
+            detailed={true}
+          />
         );
 
       case 'history':
         return (
-          <div className="bg-white rounded-xl p-6 shadow-lg border">
-            <h2 className="text-2xl font-bold mb-6">Riwayat Kunjungan</h2>
-            {memberData.riwayat_kunjungan && memberData.riwayat_kunjungan.length > 0 ? (
-              <div className="space-y-4">
-                {memberData.riwayat_kunjungan.map((visit, index) => (
-                  <div key={visit.id || `visit-${index}`} className="flex items-center justify-between p-4 border rounded-lg">
-                    <div className="flex items-center space-x-4">
-                      <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
-                        <span className="text-blue-600 text-xl">🏃</span>
-                      </div>
-                      <div>
-                        <p className="font-semibold">Kunjungan Gym</p>
-                        <p className="text-sm text-gray-600">
-                          {formatDateTime(visit.tanggal)}
-                        </p>
-                        <p className="text-sm text-gray-500">Durasi: {visit.durasi}</p>
-                        {visit.location && (
-                          <p className="text-sm text-gray-500">Lokasi: {visit.location}</p>
-                        )}
-                      </div>
-                    </div>
-                    <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-semibold">
-                      Selesai
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-center py-12">
-                <div className="text-6xl mb-4">📊</div>
-                <p className="text-gray-500 text-lg">Belum ada riwayat kunjungan</p>
-                <p className="text-gray-400">Lakukan check-in pertama Anda!</p>
-                <button 
-                  onClick={handleCheckin}
-                  className="mt-4 bg-green-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 transition font-semibold"
-                >
-                  📝 Check-in Sekarang
-                </button>
-              </div>
-            )}
-          </div>
+          <AttendanceHistory 
+            data={attendanceHistory}
+            loading={historyLoading}
+            detailed={true}
+          />
         );
 
       case 'payment':
         return (
-          <div className="bg-white rounded-xl p-6 shadow-lg border">
-            <h2 className="text-2xl font-bold mb-6">Riwayat Pembayaran</h2>
+          <div className="bg-white rounded-xl shadow-lg border">
+            <div className="p-6 border-b">
+              <h2 className="text-xl font-bold">💳 Riwayat Pembayaran</h2>
+              <p className="text-gray-600">Transaksi dan pembayaran membership</p>
+            </div>
             
-            {memberData.riwayat_transaksi && memberData.riwayat_transaksi.length > 0 ? (
-              <div className="space-y-4">
-                {memberData.riwayat_transaksi.map((transaction, index) => {
-                  // Handle timestamp conversion
-                  const transactionDate = transaction.tanggal instanceof Date ? 
-                    transaction.tanggal : 
-                    new Date(transaction.tanggal);
-                  
-                  return (
-                    <div key={transaction.id || `trans-${index}`} className="flex items-center justify-between p-4 border rounded-lg">
-                      <div className="flex items-center space-x-4">
-                        <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
-                          <span className="text-green-600 text-xl">💳</span>
-                        </div>
-                        <div className="flex-1">
-                          <p className="font-semibold">{transaction.jenis || 'Pembayaran Membership'}</p>
-                          <p className="text-sm text-gray-600">
-                            {formatDateTime(transactionDate)}
-                          </p>
-                          {transaction.paket && (
-                            <p className="text-sm text-blue-600">Paket: {transaction.paket}</p>
-                          )}
-                          {transaction.metode_pembayaran && (
-                            <p className="text-sm text-gray-500">Metode: {transaction.metode_pembayaran}</p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-bold text-lg text-green-600">
-                          {formatCurrency(transaction.jumlah || 0)}
-                        </p>
-                        <span className={`px-2 py-1 rounded-full text-sm ${
-                          transaction.status === 'completed' 
-                            ? 'bg-green-100 text-green-800' 
-                            : 'bg-yellow-100 text-yellow-800'
-                        }`}>
-                          {transaction.status || 'completed'}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
+            {historyLoading ? (
+              <div className="p-8 text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                <p className="text-gray-600">Memuat riwayat pembayaran...</p>
+              </div>
+            ) : transactions.length === 0 ? (
+              <div className="p-8 text-center">
+                <div className="text-5xl mb-4">💳</div>
+                <h3 className="text-xl font-semibold text-gray-700 mb-2">Belum ada transaksi</h3>
+                <p className="text-gray-500">Riwayat pembayaran akan muncul di sini setelah Anda melakukan transaksi</p>
               </div>
             ) : (
-              <div className="text-center py-12">
-                <div className="text-6xl mb-4">💳</div>
-                <p className="text-gray-500 text-lg">Belum ada riwayat pembayaran</p>
-                <p className="text-gray-400 mt-2">
-                  {memberData.status === 'pending' 
-                    ? 'Silakan lakukan pembayaran untuk mengaktifkan membership'
-                    : 'Riwayat pembayaran akan muncul di sini setelah pembayaran'
-                  }
-                </p>
-                {memberData.status === 'pending' && (
-                  <button 
-                    onClick={() => router.push('/member/payment')}
-                    className="mt-4 bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition font-semibold"
-                  >
-                    💳 Bayar Sekarang
-                  </button>
-                )}
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Tanggal</th>
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Jenis</th>
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Deskripsi</th>
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Jumlah</th>
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Status</th>
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Metode</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {transactions.map((transaction) => (
+                      <tr key={transaction.id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm">{formatDate(transaction.date)}</div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm">{transaction.type}</div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="text-sm">{transaction.description}</div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm font-semibold">{formatCurrency(transaction.amount)}</div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getStatusColor(transaction.status)}`}>
+                            {transaction.status}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm">{transaction.paymentMethod}</div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
+            
+            <div className="p-6 border-t">
+              <button className="w-full bg-blue-500 text-white py-3 rounded-lg hover:bg-blue-600 transition font-medium">
+                Lihat Semua Transaksi
+              </button>
+            </div>
           </div>
         );
 
       default:
-        return null;
+        return (
+          <div className="text-center py-12">
+            <div className="text-gray-500">Tab tidak ditemukan</div>
+          </div>
+        );
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-100">
-      {/* Header */}
-      <nav className="bg-white shadow-lg sticky top-0 z-40">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center">
-                <span className="text-white font-bold">HS</span>
+    <>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-100">
+        <nav className="bg-white shadow-lg sticky top-0 z-40">
+          <div className="container mx-auto px-6 py-4">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center">
+                  <span className="text-white font-bold">HS</span>
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold text-gray-800">Member Dashboard</h1>
+                  <p className="text-sm text-gray-600">
+                    {isCheckedInToday ? '✅ Sudah check-in' : '⏰ Belum check-in'}
+                    {currentFacility && ` • 🏋️ ${currentFacility}`}
+                    {!streamConnected && ' • 📡 Connecting...'}
+                  </p>
+                </div>
               </div>
-              <div>
-                <h1 className="text-xl font-bold text-gray-800">Member Dashboard</h1>
-                <p className="text-sm text-gray-600">HS Gym Management System</p>
+              
+              <div className="flex items-center space-x-4">
+                <div className="text-right hidden md:block">
+                  <p className="text-gray-700 font-semibold truncate max-w-[200px]">{memberData?.nama}</p>
+                  <p className="text-sm text-gray-600 truncate max-w-[200px]">
+                    {isCheckedInToday && currentFacility 
+                      ? `🏋️ ${currentFacility}` 
+                      : `Paket ${memberData?.membership_plan}`}
+                  </p>
+                </div>
+                
+                {isCheckedInToday ? (
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={() => setShowFacilityModal(true)}
+                      className="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition font-medium"
+                    >
+                      🏋️ {currentFacility ? 'Ganti Fasilitas' : 'Pilih Fasilitas'}
+                    </button>
+                    <button
+                      onClick={handleCheckout}
+                      className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition font-medium"
+                    >
+                      🏃 Check-out
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleDailyCheckin}
+                    disabled={checkinLoading}
+                    className="bg-orange-500 text-white px-4 py-2 rounded-lg hover:bg-orange-600 transition font-medium disabled:opacity-50"
+                  >
+                    {checkinLoading ? 'Memproses...' : '🎫 Check-in'}
+                  </button>
+                )}
+                
+                <button 
+                  onClick={logout}
+                  className="bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 transition font-medium"
+                >
+                  Logout
+                </button>
               </div>
             </div>
-            
-            <div className="flex items-center space-x-4">
-              <div className="text-right hidden md:block">
-                <p className="text-gray-700 font-semibold truncate max-w-[200px]">{memberData?.nama}</p>
-                <p className="text-sm text-gray-600 truncate max-w-[200px]">
-                  Paket {memberData?.membership_plan} • {getRemainingDaysText(memberData?.sisa_hari || 0)} tersisa
-                </p>
-              </div>
-              <button 
-                onClick={logout}
-                className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 transition font-medium whitespace-nowrap"
-              >
-                Logout
-              </button>
-            </div>
-          </div>
 
-          {/* Navigation Tabs */}
-          <div className="mt-4 flex space-x-1 overflow-x-auto">
-            {tabs.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition whitespace-nowrap ${
-                  activeTab === tab.id 
-                    ? 'bg-blue-500 text-white shadow-md' 
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                <span className="text-lg">{tab.icon}</span>
-                <span className="font-medium">{tab.label}</span>
-              </button>
-            ))}
+            <div className="mt-4 flex space-x-1 overflow-x-auto">
+              {tabs.map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition whitespace-nowrap ${
+                    activeTab === tab.id 
+                      ? 'bg-blue-500 text-white shadow-md' 
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  <span className="text-lg">{tab.icon}</span>
+                  <span className="font-medium">{tab.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
+        </nav>
+
+        <div className="container mx-auto p-4 md:p-6">
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+              <div className="flex items-center">
+                <div className="text-red-600">⚠️</div>
+                <div className="ml-3">
+                  <p className="text-red-800 font-medium">Error</p>
+                  <p className="text-red-700 text-sm">{error}</p>
+                </div>
+                <button 
+                  onClick={() => setError(null)}
+                  className="ml-auto text-red-600 hover:text-red-800"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+          
+          {renderTabContent()}
         </div>
-      </nav>
-
-      {/* Main Content */}
-      <div className="container mx-auto p-4 md:p-6">
-        {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-            <div className="flex items-center">
-              <div className="text-red-600">⚠️</div>
-              <div className="ml-3">
-                <p className="text-red-800 font-medium">Error</p>
-                <p className="text-red-700 text-sm">{error}</p>
-              </div>
-              <button 
-                onClick={() => setError(null)}
-                className="ml-auto text-red-600 hover:text-red-800"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-        )}
-        
-        {renderTabContent()}
       </div>
-    </div>
+
+      {renderFacilityModal()}
+    </>
   );
 }
