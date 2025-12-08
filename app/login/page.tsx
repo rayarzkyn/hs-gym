@@ -407,7 +407,7 @@ const LoginPage = () => {
             <div className="space-y-5">
               <div>
                 <label htmlFor="identifier" className="block text-sm font-medium text-cyan-100 mb-3">
-                  👤 Username atau Email
+                  👤 Username
                 </label>
                 <input
                   id="identifier"
@@ -502,7 +502,7 @@ const LoginPage = () => {
           <div className="text-cyan-200 text-sm space-y-2">
             <div className="flex justify-between items-center">
               <span className="font-medium">Member Regular:</span>
-              <span className="text-xs">Username / Email</span>
+              <span className="text-xs">Username</span>
             </div>
             <div className="flex justify-between items-center">
               <span className="font-medium">Staff Keuangan:</span>
