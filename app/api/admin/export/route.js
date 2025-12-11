@@ -32,6 +32,9 @@ export async function POST(request) {
       }, { status: 400 });
     }
 
+    // Set end date to end of day
+    end.setHours(23, 59, 59, 999);
+
     let exportData = [];
     let filename = '';
 
@@ -42,7 +45,7 @@ export async function POST(request) {
         break;
 
       case 'members':
-        exportData = await exportMembers();
+        exportData = await exportMembers(start, end); // Pass dates for member join date filtering
         filename = `data_member_${new Date().toISOString().split('T')[0]}.${format === 'excel' ? 'csv' : 'pdf'}`;
         break;
 
@@ -65,7 +68,8 @@ export async function POST(request) {
 
     console.log(`✅ Export ${type} successful:`, {
       recordCount: exportData.length,
-      filename: filename
+      filename: filename,
+      dateRange: `${startDate} to ${endDate}`
     });
 
     return NextResponse.json({
@@ -74,7 +78,11 @@ export async function POST(request) {
         data: exportData,
         filename: filename,
         recordCount: exportData.length,
-        generatedAt: new Date().toISOString()
+        generatedAt: new Date().toISOString(),
+        dateRange: {
+          start: startDate,
+          end: endDate
+        }
       }
     });
 
@@ -91,14 +99,14 @@ export async function POST(request) {
   }
 }
 
-// Export transactions data
+// Export transactions data with proper date filtering
 async function exportTransactions(startDate, endDate) {
   try {
-    console.log('💳 Exporting transactions...');
+    console.log('💳 Exporting transactions...', {
+      start: startDate.toLocaleDateString('id-ID'),
+      end: endDate.toLocaleDateString('id-ID')
+    });
     
-    const end = new Date(endDate);
-    end.setDate(end.getDate() + 1); // Include end date
-
     // Get member transactions
     const memberTransactionsSnapshot = await getDocs(
       query(collection(db, 'transactions'))
@@ -130,8 +138,10 @@ async function exportTransactions(startDate, endDate) {
       ...allNonMemberTransactions
     ].filter(transaction => {
       const transactionDate = getTransactionDate(transaction);
-      return transactionDate >= startDate && transactionDate < end;
+      return transactionDate >= startDate && transactionDate <= endDate;
     });
+
+    console.log(`📊 Found ${allTransactions.length} transactions in date range`);
 
     // Format for export
     const formattedData = allTransactions.map(transaction => {
@@ -142,12 +152,14 @@ async function exportTransactions(startDate, endDate) {
       return {
         'ID Transaksi': transaction.id,
         'Tanggal': date.toLocaleDateString('id-ID'),
+        'Waktu': date.toLocaleTimeString('id-ID'),
         'Jenis': transaction.type === 'membership' ? 'Membership' : 'Daily Pass',
-        'Nama': transaction.memberName || transaction.nama || 'Unknown',
-        'Jumlah': amount,
+        'Nama': transaction.memberName || transaction.nama || transaction.fullName || 'Unknown',
+        'Jumlah': `Rp ${amount.toLocaleString('id-ID')}`,
+        'Nominal': amount,
         'Metode Pembayaran': method,
         'Status': transaction.status || 'completed',
-        'Keterangan': transaction.description || ''
+        'Keterangan': transaction.description || transaction.keterangan || ''
       };
     });
 
@@ -158,8 +170,8 @@ async function exportTransactions(startDate, endDate) {
   }
 }
 
-// Export members data
-async function exportMembers() {
+// Export members data - filter by join date if needed
+async function exportMembers(startDate, endDate) {
   try {
     console.log('👥 Exporting members data...');
     
@@ -170,7 +182,15 @@ async function exportMembers() {
       ...doc.data()
     }));
 
-    const formattedData = members.map(member => {
+    // Filter members by join date within range (if needed)
+    const filteredMembers = members.filter(member => {
+      const joinDate = member.tanggal_daftar?.toDate?.() || new Date(member.tanggal_daftar);
+      return joinDate >= startDate && joinDate <= endDate;
+    });
+
+    console.log(`👥 Found ${filteredMembers.length} members in date range`);
+
+    const formattedData = filteredMembers.map(member => {
       const joinDate = member.tanggal_daftar?.toDate?.() || new Date(member.tanggal_daftar);
       const expiryDate = member.masa_aktif?.toDate?.() || new Date(member.masa_aktif);
       
@@ -179,14 +199,17 @@ async function exportMembers() {
         'Nomor Member': member.nomor_member || '',
         'Nama Lengkap': member.nama || member.fullName || '',
         'Email': member.email || '',
-        'Telepon': member.telepon || '',
-        'Alamat': member.alamat || '',
-        'Plan Membership': member.membership_plan || '',
-        'Harga': member.membership_price || 0,
+        'Telepon': member.telepon || member.phone || '',
+        'Alamat': member.alamat || member.address || '',
+        'Plan Membership': member.membership_plan || member.plan || '',
+        'Harga': `Rp ${(member.membership_price || 0).toLocaleString('id-ID')}`,
+        'Nominal': member.membership_price || 0,
         'Status': member.status || '',
         'Tanggal Daftar': joinDate.toLocaleDateString('id-ID'),
         'Masa Aktif': expiryDate.toLocaleDateString('id-ID'),
-        'Total Kunjungan': member.totalVisits || 0
+        'Sisa Hari': Math.max(0, Math.ceil((expiryDate - new Date()) / (1000 * 60 * 60 * 24))),
+        'Total Kunjungan': member.totalVisits || member.kunjungan || 0,
+        'Terakhir Kunjung': member.lastVisit ? new Date(member.lastVisit).toLocaleDateString('id-ID') : '-'
       };
     });
 
@@ -197,25 +220,27 @@ async function exportMembers() {
   }
 }
 
-// Export financial reports
+// Export financial reports with proper date filtering
 async function exportFinancialReports(startDate, endDate) {
   try {
-    console.log('📊 Exporting financial reports...');
+    console.log('📊 Exporting financial reports...', {
+      start: startDate.toLocaleDateString('id-ID'),
+      end: endDate.toLocaleDateString('id-ID')
+    });
     
-    const end = new Date(endDate);
-    end.setDate(end.getDate() + 1);
-
     // Get data from multiple sources
     const [
       membersSnapshot,
       nonMembersSnapshot,
       expensesSnapshot,
-      nonMemberTransactionsSnapshot
+      nonMemberTransactionsSnapshot,
+      memberTransactionsSnapshot
     ] = await Promise.all([
       getDocs(collection(db, 'members')),
       getDocs(query(collection(db, 'non_members'), where('status', '==', 'active'))),
       getDocs(collection(db, 'expenses')),
-      getDocs(query(collection(db, 'non_member_transactions'), where('status', '==', 'completed')))
+      getDocs(query(collection(db, 'non_member_transactions'), where('status', '==', 'completed'))),
+      getDocs(collection(db, 'transactions'))
     ]);
 
     // Process data
@@ -223,38 +248,55 @@ async function exportFinancialReports(startDate, endDate) {
     const nonMembers = nonMembersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     const expenses = expensesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     const nonMemberTransactions = nonMemberTransactionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const memberTransactions = memberTransactionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 
     // Filter by date
     const filteredExpenses = expenses.filter(expense => {
       const expenseDate = expense.date?.toDate?.() || new Date(expense.date);
-      return expenseDate >= startDate && expenseDate < end;
+      return expenseDate >= startDate && expenseDate <= endDate;
     });
 
     const filteredNonMemberTransactions = nonMemberTransactions.filter(transaction => {
       const transactionDate = getTransactionDate(transaction);
-      return transactionDate >= startDate && transactionDate < end;
+      return transactionDate >= startDate && transactionDate <= endDate;
+    });
+
+    const filteredMemberTransactions = memberTransactions.filter(transaction => {
+      const transactionDate = getTransactionDate(transaction);
+      return transactionDate >= startDate && transactionDate <= endDate;
     });
 
     // Calculate totals
     const activeMembers = members.filter(m => m.status === 'active');
-    const membershipRevenue = activeMembers.reduce((sum, member) => sum + (member.membership_price || 0), 0);
-    const dailyPassRevenue = filteredNonMemberTransactions.reduce((sum, transaction) => sum + (transaction.jumlah || 0), 0);
+    const membershipRevenue = filteredMemberTransactions.reduce((sum, transaction) => 
+      sum + (transaction.amount || transaction.membership_price || 0), 0);
+    const dailyPassRevenue = filteredNonMemberTransactions.reduce((sum, transaction) => 
+      sum + (transaction.jumlah || transaction.amount || 0), 0);
     const totalRevenue = membershipRevenue + dailyPassRevenue;
-    const totalExpenses = filteredExpenses.reduce((sum, expense) => sum + (expense.jumlah || 0), 0);
+    const totalExpenses = filteredExpenses.reduce((sum, expense) => 
+      sum + (expense.jumlah || expense.amount || 0), 0);
 
     const formattedData = [{
       'Periode': `${startDate.toLocaleDateString('id-ID')} - ${endDate.toLocaleDateString('id-ID')}`,
-      'Total Pendapatan': totalRevenue,
-      'Pendapatan Membership': membershipRevenue,
-      'Pendapatan Daily Pass': dailyPassRevenue,
-      'Total Pengeluaran': totalExpenses,
-      'Laba Bersih': totalRevenue - totalExpenses,
+      'Total Pendapatan': `Rp ${totalRevenue.toLocaleString('id-ID')}`,
+      'Pendapatan Membership': `Rp ${membershipRevenue.toLocaleString('id-ID')}`,
+      'Pendapatan Daily Pass': `Rp ${dailyPassRevenue.toLocaleString('id-ID')}`,
+      'Total Pengeluaran': `Rp ${totalExpenses.toLocaleString('id-ID')}`,
+      'Laba Bersih': `Rp ${(totalRevenue - totalExpenses).toLocaleString('id-ID')}`,
       'Member Aktif': activeMembers.length,
       'Member Total': members.length,
       'Daily Pass Aktif': nonMembers.length,
       'Transaksi Daily Pass': filteredNonMemberTransactions.length,
-      'Jumlah Pengeluaran': filteredExpenses.length
+      'Transaksi Membership': filteredMemberTransactions.length,
+      'Jumlah Pengeluaran': filteredExpenses.length,
+      'Tanggal Export': new Date().toLocaleDateString('id-ID')
     }];
+
+    console.log(`📊 Financial report generated:`, {
+      revenue: totalRevenue,
+      expenses: totalExpenses,
+      netIncome: totalRevenue - totalExpenses
+    });
 
     return formattedData;
   } catch (error) {
@@ -263,10 +305,13 @@ async function exportFinancialReports(startDate, endDate) {
   }
 }
 
-// Export expenses data
+// Export expenses data with proper date filtering
 async function exportExpenses(startDate, endDate) {
   try {
-    console.log('💸 Exporting expenses data...');
+    console.log('💸 Exporting expenses data...', {
+      start: startDate.toLocaleDateString('id-ID'),
+      end: endDate.toLocaleDateString('id-ID')
+    });
     
     const expensesSnapshot = await getDocs(
       query(collection(db, 'expenses'), orderBy('date', 'desc'))
@@ -277,14 +322,13 @@ async function exportExpenses(startDate, endDate) {
       ...doc.data()
     }));
 
-    const end = new Date(endDate);
-    end.setDate(end.getDate() + 1);
-
     // Filter by date
     const filteredExpenses = allExpenses.filter(expense => {
       const expenseDate = expense.date?.toDate?.() || new Date(expense.date);
-      return expenseDate >= startDate && expenseDate < end;
+      return expenseDate >= startDate && expenseDate <= endDate;
     });
+
+    console.log(`💸 Found ${filteredExpenses.length} expenses in date range`);
 
     const formattedData = filteredExpenses.map(expense => {
       const date = expense.date?.toDate?.() || new Date(expense.date);
@@ -292,11 +336,14 @@ async function exportExpenses(startDate, endDate) {
       return {
         'ID Pengeluaran': expense.id,
         'Tanggal': date.toLocaleDateString('id-ID'),
-        'Kategori': expense.kategori || 'Lainnya',
-        'Deskripsi': expense.deskripsi || '',
-        'Jumlah': expense.jumlah || 0,
-        'Dibuat Oleh': expense.created_by || 'System',
-        'Status': expense.status || 'active'
+        'Waktu': date.toLocaleTimeString('id-ID'),
+        'Kategori': expense.kategori || expense.category || 'Lainnya',
+        'Deskripsi': expense.deskripsi || expense.description || '',
+        'Jumlah': `Rp ${(expense.jumlah || expense.amount || 0).toLocaleString('id-ID')}`,
+        'Nominal': expense.jumlah || expense.amount || 0,
+        'Dibuat Oleh': expense.created_by || expense.createdBy || 'System',
+        'Status': expense.status || 'active',
+        'Metode Pembayaran': expense.payment_method || expense.paymentMethod || 'Cash'
       };
     });
 

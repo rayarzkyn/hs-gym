@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { recordNonMemberVisit } from '../../../../lib/non-member-firebase';
 import { db } from '../../../../lib/firebase-client';
 import { collection, query, where, getDocs, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
 
@@ -82,27 +81,10 @@ export async function POST(request) {
         }, { status: 400 });
       }
       
-      // Auto check-in ketika login berhasil
-      let visitResult = { success: false };
-      try {
-        visitResult = await recordNonMemberVisit({
-          daily_code: memberData.daily_code,
-          username: username,
-          nama: memberData.nama,
-          location: 'Main Gym Area',
-          status: 'active',
-          login_type: 'non_member_daily'
-        });
-        
-        if (visitResult.success) {
-          console.log('✅ Visit recorded successfully');
-        }
-      } catch (visitError) {
-        console.warn('⚠️ Failed to record visit:', visitError);
-        // Continue with login even if visit recording fails
-      }
+      // **HAPUS auto checkin! Login hanya untuk autentikasi**
+      console.log('✅ Login successful - NO auto checkin');
       
-      // Prepare user session data
+      // Prepare user session data (TANPA visit_id atau active_visit)
       const userData = {
         daily_code: memberData.daily_code,
         username: username,
@@ -115,16 +97,14 @@ export async function POST(request) {
         expired_at: memberData.expired_at,
         role: 'non_member_daily',
         login_time: new Date().toISOString(),
-        visit_id: visitResult.visit_id || null
+        manual_checkin_required: true // Flag untuk manual checkin
       };
       
       console.log('✅ Non-member login successful:', memberData.nama);
       
       return NextResponse.json({
         success: true,
-        message: visitResult.success 
-          ? 'Login berhasil! Check-in otomatis dicatat.' 
-          : 'Login berhasil!',
+        message: 'Login berhasil! Silakan check-in manual dari dashboard.',
         data: userData
       });
       

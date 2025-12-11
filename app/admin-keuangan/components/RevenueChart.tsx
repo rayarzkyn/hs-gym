@@ -1,239 +1,369 @@
 'use client';
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 interface RevenueChartProps {
-  data: any[];
+  data?: any[];
   detailed?: boolean;
+  loading?: boolean;
+  isRealTime?: boolean;
 }
 
-interface ChartData {
-  date: string;
-  revenue: number;
-  transactions?: number;
-  membership?: number;
-  dailyPass?: number;
-}
-
-export default function RevenueChart({ data, detailed = false }: RevenueChartProps) {
-  const [chartType, setChartType] = useState<'revenue' | 'transactions' | 'breakdown'>('revenue');
-  const [chartData, setChartData] = useState<ChartData[]>([]);
+export default function RevenueChart({ data: propData, detailed = false, loading = false, isRealTime = false }: RevenueChartProps) {
+  const [chartData, setChartData] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!data || !Array.isArray(data)) {
-      setChartData([]);
-      return;
-    }
+    const loadChartData = async () => {
+      try {
+        setIsLoading(true);
 
-    // Use the provided data directly
-    const normalizedData = data.map(item => ({
-      date: item.date,
-      revenue: item.revenue || 0,
-      transactions: item.transactions || 0,
-      membership: item.membership || 0,
-      dailyPass: item.dailyPass || 0
-    }));
-
-    setChartData(normalizedData);
-  }, [data]);
-
-  const renderChart = () => {
-    if (!chartData || chartData.length === 0) {
-      return (
-        <div className="h-64 flex flex-col items-center justify-center text-gray-500">
-          <div className="text-4xl mb-2">📊</div>
-          <p>Tidak ada data untuk ditampilkan</p>
-          <p className="text-sm mt-1">Data grafik akan muncul di sini</p>
-        </div>
-      );
-    }
-
-    const maxValue = Math.max(
-      ...chartData.map(item => {
-        switch (chartType) {
-          case 'revenue': return item.revenue;
-          case 'transactions': return item.transactions || 0;
-          case 'breakdown': return Math.max(item.membership || 0, item.dailyPass || 0);
-          default: return item.revenue;
+        // Jika ada propData, gunakan itu
+        if (propData && propData.length > 0) {
+          setChartData(propData);
+          setIsLoading(false);
+          console.log('📊 Using provided chart data:', propData.length, 'days');
+          return;
         }
-      })
-    );
 
-    return (
-      <div className="h-64 flex items-end space-x-1 pt-4 px-2">
-        {chartData.slice(-15).map((item, index) => {
-          let value = 0;
-          let breakdown = null;
+        // Jika tidak, fetch dari API
+        console.log('📈 Fetching chart data...');
+        const response = await fetch('/api/admin/financial-reports/chart?days=7');
+        const result = await response.json();
 
-          switch (chartType) {
-            case 'revenue':
-              value = item.revenue;
-              break;
-            case 'transactions':
-              value = item.transactions || 0;
-              break;
-            case 'breakdown':
-              value = (item.membership || 0) + (item.dailyPass || 0);
-              breakdown = {
-                membership: item.membership || 0,
-                dailyPass: item.dailyPass || 0
-              };
-              break;
-          }
+        if (result.success && result.data) {
+          setChartData(result.data);
+          console.log('✅ Chart data loaded:', result.data.length, 'days');
+        } else {
+          setError('Gagal memuat data chart');
+        }
+      } catch (error) {
+        console.error('Error loading chart data:', error);
+        setError('Terjadi kesalahan saat memuat data');
+      } finally {
+        setIsLoading(false);
+      }
+    };
 
-          const height = maxValue > 0 ? (value / maxValue) * 180 : 0;
-          const label = new Date(item.date).toLocaleDateString('id-ID', { 
-            month: 'short', 
-            day: 'numeric' 
-          });
+    loadChartData();
+  }, [propData]);
 
-          return (
-            <div key={index} className="flex flex-col items-center flex-1">
-              <div className="relative w-full max-w-8" style={{ height: `${Math.max(height, 8)}px` }}>
-                {breakdown ? (
-                  // Stacked bar for breakdown
-                  <div className="absolute bottom-0 w-full h-full flex flex-col-reverse">
-                    <div 
-                      className="bg-green-500 w-full"
-                      style={{ height: `${((breakdown.dailyPass || 0) / value) * 100}%` }}
-                      title={`Daily Pass: Rp ${(breakdown.dailyPass || 0).toLocaleString('id-ID')}`}
-                    ></div>
-                    <div 
-                      className="bg-blue-500 w-full"
-                      style={{ height: `${((breakdown.membership || 0) / value) * 100}%` }}
-                      title={`Membership: Rp ${(breakdown.membership || 0).toLocaleString('id-ID')}`}
-                    ></div>
-                  </div>
-                ) : (
-                  // Single bar for revenue/transactions
-                  <div
-                    className={`w-full rounded-t transition-all hover:opacity-80 cursor-pointer ${
-                      chartType === 'revenue' 
-                        ? 'bg-gradient-to-t from-blue-500 to-blue-600' 
-                        : 'bg-gradient-to-t from-green-500 to-green-600'
-                    }`}
-                    style={{ height: `${Math.max(height, 8)}px` }}
-                    title={
-                      chartType === 'revenue' 
-                        ? `Rp ${value.toLocaleString('id-ID')}`
-                        : `${value} transaksi`
-                    }
-                  ></div>
-                )}
-              </div>
-              <div className="text-xs text-gray-600 mt-2 text-center leading-tight">
-                {label}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    );
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('id-ID', {
+      style: 'currency',
+      currency: 'IDR',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(amount);
   };
 
-  const totalRevenue = chartData.reduce((sum, item) => sum + item.revenue, 0);
+  // Calculate totals
+  const totalRevenue = chartData.reduce((sum, item) => sum + (item.revenue || 0), 0);
+  const totalProfit = chartData.reduce((sum, item) => sum + (item.profit || 0), 0);
   const totalTransactions = chartData.reduce((sum, item) => sum + (item.transactions || 0), 0);
-  const latestRevenue = chartData[chartData.length - 1]?.revenue || 0;
+  const totalMembership = chartData.reduce((sum, item) => sum + (item.membership || 0), 0);
+  const totalDailyPass = chartData.reduce((sum, item) => sum + (item.dailyPass || 0), 0);
+  const avgDailyRevenue = chartData.length > 0 ? totalRevenue / chartData.length : 0;
+  const avgDailyProfit = chartData.length > 0 ? totalProfit / chartData.length : 0;
+
+  // Find max values for scaling
+  const maxRevenue = Math.max(...chartData.map(item => item.revenue || 0), 1);
+  const maxProfit = Math.max(...chartData.map(item => item.profit || 0), 1);
+  const maxTransactions = Math.max(...chartData.map(item => item.transactions || 0), 1);
+
+  if (isLoading || loading) {
+    return (
+      <div className="bg-white rounded-2xl p-6 shadow-lg">
+        <div className="h-6 bg-gray-200 rounded w-40 mb-6 animate-pulse"></div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="bg-gray-100 rounded-xl p-4 animate-pulse">
+              <div className="h-5 bg-gray-200 rounded w-24 mb-3"></div>
+              <div className="h-8 bg-gray-200 rounded w-32"></div>
+            </div>
+          ))}
+        </div>
+        <div className="h-64 bg-gray-100 rounded animate-pulse"></div>
+      </div>
+    );
+  }
+
+  if (error || chartData.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl p-6 shadow-lg">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold text-gray-800">Grafik Pendapatan</h3>
+          {isRealTime && (
+            <span className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full">
+              Real-time
+            </span>
+          )}
+        </div>
+        <div className="text-center py-12">
+          <div className="text-gray-400 text-4xl mb-4">📊</div>
+          <p className="text-gray-500 mb-4">
+            {error || 'Tidak ada data untuk ditampilkan'}
+          </p>
+          <p className="text-sm text-gray-400">
+            Data grafik akan muncul di sini
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="bg-white rounded-xl shadow-lg p-6">
+    <div className="bg-white rounded-2xl p-6 shadow-lg">
+      {/* Header dengan real-time indicator */}
       <div className="flex justify-between items-center mb-6">
-        <h2 className="text-xl font-bold text-gray-800">Grafik Pendapatan</h2>
-        <div className="flex space-x-1 bg-gray-100 rounded-lg p-1">
-          <button
-            onClick={() => setChartType('revenue')}
-            className={`px-3 py-1 rounded text-sm font-medium transition ${
-              chartType === 'revenue'
-                ? 'bg-blue-500 text-white shadow-sm'
-                : 'text-gray-600 hover:text-gray-800'
-            }`}
-          >
-            Pendapatan
-          </button>
-          <button
-            onClick={() => setChartType('transactions')}
-            className={`px-3 py-1 rounded text-sm font-medium transition ${
-              chartType === 'transactions'
-                ? 'bg-green-500 text-white shadow-sm'
-                : 'text-gray-600 hover:text-gray-800'
-            }`}
-          >
-            Transaksi
-          </button>
-          <button
-            onClick={() => setChartType('breakdown')}
-            className={`px-3 py-1 rounded text-sm font-medium transition ${
-              chartType === 'breakdown'
-                ? 'bg-purple-500 text-white shadow-sm'
-                : 'text-gray-600 hover:text-gray-800'
-            }`}
-          >
-            Breakdown
-          </button>
-        </div>
+        <h3 className="text-lg font-semibold text-gray-800">Grafik Pendapatan 7 Hari Terakhir</h3>
+        {isRealTime && (
+          <span className="px-3 py-1 bg-green-100 text-green-800 text-sm rounded-full flex items-center">
+            <span className="w-2 h-2 bg-green-500 rounded-full mr-2"></span>
+            Real-time
+          </span>
+        )}
       </div>
 
-      {renderChart()}
-
-      {/* Summary Stats */}
-      <div className="mt-6 grid grid-cols-3 gap-4 text-center">
-        <div className="bg-blue-50 rounded-lg p-3">
-          <div className="text-lg font-bold text-blue-600">
-            Rp {latestRevenue.toLocaleString('id-ID')}
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className="text-center p-4 bg-blue-50 rounded-xl border border-blue-100">
+          <div className="text-2xl mb-2">💰</div>
+          <div className="text-sm text-gray-600 font-medium">Total Pendapatan</div>
+          <div className="text-xl font-bold text-blue-600 my-2">
+            {formatCurrency(totalRevenue)}
           </div>
-          <div className="text-xs text-gray-600">Terbaru</div>
+          <div className="text-xs text-gray-500">
+            {chartData.length} hari
+          </div>
         </div>
-        <div className="bg-green-50 rounded-lg p-3">
-          <div className="text-lg font-bold text-green-600">
+
+        <div className="text-center p-4 bg-green-50 rounded-xl border border-green-100">
+          <div className="text-2xl mb-2">📈</div>
+          <div className="text-sm text-gray-600 font-medium">Rata-rata Harian</div>
+          <div className="text-xl font-bold text-green-600 my-2">
+            {formatCurrency(avgDailyRevenue)}
+          </div>
+          <div className="text-xs text-gray-500">
+            Per hari
+          </div>
+        </div>
+
+        <div className="text-center p-4 bg-purple-50 rounded-xl border border-purple-100">
+          <div className="text-2xl mb-2">👥</div>
+          <div className="text-sm text-gray-600 font-medium">Total Transaksi</div>
+          <div className="text-xl font-bold text-purple-600 my-2">
             {totalTransactions}
           </div>
-          <div className="text-xs text-gray-600">Total Transaksi</div>
-        </div>
-        <div className="bg-purple-50 rounded-lg p-3">
-          <div className="text-lg font-bold text-purple-600">
-            Rp {totalRevenue.toLocaleString('id-ID')}
+          <div className="text-xs text-gray-500">
+            {chartData.length} hari
           </div>
-          <div className="text-xs text-gray-600">Total Pendapatan</div>
+        </div>
+
+        <div className="text-center p-4 bg-orange-50 rounded-xl border border-orange-100">
+          <div className="text-2xl mb-2">💵</div>
+          <div className="text-sm text-gray-600 font-medium">Total Laba</div>
+          <div className="text-xl font-bold text-orange-600 my-2">
+            {formatCurrency(totalProfit)}
+          </div>
+          <div className="text-xs text-gray-500">
+            {chartData.length} hari
+          </div>
         </div>
       </div>
 
-      {detailed && chartData.length > 0 && (
-        <div className="mt-6 border-t pt-4">
-          <h3 className="font-bold mb-3">Detail {Math.min(chartData.length, 10)} Hari Terakhir</h3>
-          <div className="space-y-2 max-h-40 overflow-y-auto">
-            {chartData.slice(-10).map((item, index) => (
-              <div key={index} className="flex justify-between items-center p-2 hover:bg-gray-50 rounded">
-                <span className="text-sm font-medium">
-                  {new Date(item.date).toLocaleDateString('id-ID', { 
-                    weekday: 'short',
-                    day: 'numeric',
-                    month: 'short'
-                  })}
-                </span>
-                <div className="text-right">
-                  <div className="font-bold text-blue-600">
-                    Rp {item.revenue.toLocaleString('id-ID')}
-                  </div>
-                  <div className="text-xs text-gray-500 flex space-x-2">
-                    <span>M: Rp {(item.membership || 0).toLocaleString('id-ID')}</span>
-                    <span>D: Rp {(item.dailyPass || 0).toLocaleString('id-ID')}</span>
-                  </div>
-                </div>
-              </div>
+      {/* Chart Visualization */}
+      <div className="mt-8">
+        {/* Y-axis labels */}
+        <div className="flex justify-between text-xs text-gray-500 mb-2 px-4">
+          <div>Rp {formatCurrency(maxRevenue).replace('Rp', '')}</div>
+          <div>Transaksi: {maxTransactions}</div>
+        </div>
+
+        {/* Chart Bars */}
+        <div className="h-64 relative border-b border-l border-gray-200">
+          {/* Grid lines */}
+          <div className="absolute inset-0 flex flex-col justify-between">
+            {[0, 0.25, 0.5, 0.75, 1].map((line, index) => (
+              <div
+                key={index}
+                className="border-t border-gray-100"
+              ></div>
             ))}
           </div>
-        </div>
-      )}
 
-      {/* Legend for breakdown */}
-      {chartType === 'breakdown' && (
-        <div className="mt-4 flex justify-center space-x-4 text-xs">
-          <div className="flex items-center space-x-1">
-            <div className="w-3 h-3 bg-blue-500 rounded"></div>
-            <span>Membership</span>
+          {/* Bars Container - FIXED: Use pixel heights for proper rendering */}
+          <div className="absolute inset-0 flex items-end justify-around px-2 pb-8">
+            {chartData.map((item, index) => {
+              // Calculate heights in pixels (max bar height = 200px)
+              const maxBarHeight = 200;
+              const memberHeight = maxRevenue > 0 ? (item.membership / maxRevenue) * maxBarHeight : 0;
+              const dailyPassHeight = maxRevenue > 0 ? (item.dailyPass / maxRevenue) * maxBarHeight : 0;
+              const totalHeight = memberHeight + dailyPassHeight;
+
+              return (
+                <div key={index} className="flex flex-col items-center justify-end" style={{ height: '100%' }}>
+                  {/* Bar and Tooltip container */}
+                  <div className="relative group flex flex-col items-center">
+                    {/* Stacked Bars */}
+                    <div className="flex flex-col-reverse items-center">
+                      {/* Member Bar (Blue) - Bottom */}
+                      {memberHeight > 0 && (
+                        <div
+                          className="w-8 bg-blue-500 transition-all duration-300 group-hover:bg-blue-600 group-hover:shadow-lg"
+                          style={{ height: `${Math.max(memberHeight, 2)}px` }}
+                        ></div>
+                      )}
+                      {/* Daily Pass Bar (Green) - Top */}
+                      {dailyPassHeight > 0 && (
+                        <div
+                          className="w-8 bg-green-500 rounded-t-lg transition-all duration-300 group-hover:bg-green-600 group-hover:shadow-lg"
+                          style={{ height: `${Math.max(dailyPassHeight, 2)}px` }}
+                        ></div>
+                      )}
+                      {/* If no data, show minimal indicator */}
+                      {totalHeight === 0 && (
+                        <div className="w-8 h-1 bg-gray-200 rounded"></div>
+                      )}
+                    </div>
+
+                    {/* Tooltip */}
+                    <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 hidden group-hover:block bg-gray-900 text-white text-xs rounded-lg py-2 px-3 whitespace-nowrap z-20 min-w-[180px]">
+                      <div className="font-semibold mb-2 border-b border-gray-700 pb-1">
+                        {new Date(item.date).toLocaleDateString('id-ID', {
+                          weekday: 'long',
+                          day: 'numeric',
+                          month: 'long'
+                        })}
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex justify-between gap-4">
+                          <span className="text-gray-300">Total:</span>
+                          <span className="font-medium">{formatCurrency(item.revenue)}</span>
+                        </div>
+                        <div className="flex justify-between gap-4">
+                          <span className="text-blue-300">💳 Member:</span>
+                          <span className="font-medium text-blue-300">{formatCurrency(item.membership)}</span>
+                        </div>
+                        <div className="flex justify-between gap-4">
+                          <span className="text-green-300">🎫 Daily Pass:</span>
+                          <span className="font-medium text-green-300">{formatCurrency(item.dailyPass)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Date Label */}
+                  <div className="text-xs text-gray-500 mt-2 text-center">
+                    {new Date(item.date).toLocaleDateString('id-ID', {
+                      weekday: 'short',
+                      day: 'numeric'
+                    })}
+                  </div>
+                </div>
+              );
+            })}
           </div>
-          <div className="flex items-center space-x-1">
-            <div className="w-3 h-3 bg-green-500 rounded"></div>
-            <span>Daily Pass</span>
+        </div>
+
+        {/* X-axis labels */}
+        <div className="flex justify-between text-xs text-gray-500 mt-2 px-4">
+          <div>Tanggal</div>
+          <div>Hover untuk detail</div>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="flex justify-center space-x-6 mt-10 pt-6 border-t border-gray-100">
+        <div className="flex items-center space-x-2">
+          <div className="w-4 h-4 bg-blue-500 rounded"></div>
+          <span className="text-sm text-gray-600">💳 Member (Rp)</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <div className="w-4 h-4 bg-green-500 rounded"></div>
+          <span className="text-sm text-gray-600">🎫 Daily Pass (Rp)</span>
+        </div>
+      </div>
+
+      {/* Breakdown Section */}
+      <div className="mt-8 pt-6 border-t border-gray-100">
+        <h4 className="text-md font-semibold text-gray-800 mb-4">Detail Pendapatan 7 Hari</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-blue-50 rounded-xl p-4">
+            <div className="text-blue-600 font-semibold mb-2">💳 Membership</div>
+            <div className="text-2xl font-bold text-blue-700">{formatCurrency(totalMembership)}</div>
+            <div className="text-sm text-blue-600 mt-1">
+              {Math.round(totalMembership / chartData.length / 1000)}k/hari
+            </div>
+          </div>
+
+          <div className="bg-green-50 rounded-xl p-4">
+            <div className="text-green-600 font-semibold mb-2">🎫 Daily Pass</div>
+            <div className="text-2xl font-bold text-green-700">{formatCurrency(totalDailyPass)}</div>
+            <div className="text-sm text-green-600 mt-1">
+              {totalTransactions} transaksi ({Math.round(totalTransactions / chartData.length)}/hari)
+            </div>
+          </div>
+
+          <div className="bg-purple-50 rounded-xl p-4">
+            <div className="text-purple-600 font-semibold mb-2">📊 Total</div>
+            <div className="text-2xl font-bold text-purple-700">{formatCurrency(totalRevenue)}</div>
+            <div className="text-sm text-purple-600 mt-1">
+              {Math.round(totalRevenue / chartData.length / 1000)}k/hari
+            </div>
+          </div>
+
+          <div className="bg-orange-50 rounded-xl p-4">
+            <div className="text-orange-600 font-semibold mb-2">📈 Laba</div>
+            <div className="text-2xl font-bold text-orange-700">{formatCurrency(totalProfit)}</div>
+            <div className="text-sm text-orange-600 mt-1">
+              {Math.round(totalProfit / chartData.length / 1000)}k/hari
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Detailed table jika diperlukan */}
+      {detailed && chartData.length > 0 && (
+        <div className="mt-8 pt-6 border-t border-gray-100">
+          <h4 className="text-md font-semibold text-gray-800 mb-4">Detail Harian</h4>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-2 text-gray-600">Tanggal</th>
+                  <th className="text-right py-2 text-gray-600">Pendapatan</th>
+                  <th className="text-right py-2 text-gray-600">Transaksi</th>
+                  <th className="text-right py-2 text-gray-600">Membership</th>
+                  <th className="text-right py-2 text-gray-600">Daily Pass</th>
+                </tr>
+              </thead>
+              <tbody>
+                {chartData.map((item, index) => (
+                  <tr key={index} className="border-b border-gray-100 hover:bg-gray-50">
+                    <td className="py-2">
+                      {new Date(item.date).toLocaleDateString('id-ID', {
+                        weekday: 'short',
+                        day: 'numeric',
+                        month: 'short'
+                      })}
+                    </td>
+                    <td className="text-right py-2 font-medium">
+                      {formatCurrency(item.revenue)}
+                    </td>
+                    <td className="text-right py-2">
+                      {item.transactions}
+                    </td>
+                    <td className="text-right py-2 text-blue-600">
+                      {formatCurrency(item.membership)}
+                    </td>
+                    <td className="text-right py-2 text-green-600">
+                      {formatCurrency(item.dailyPass)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

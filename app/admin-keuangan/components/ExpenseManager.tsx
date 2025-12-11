@@ -31,7 +31,7 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
 
   useEffect(() => {
     loadExpenses();
-    
+
     // Set up real-time updates every 30 seconds
     const interval = setInterval(loadExpenses, 30000);
     return () => clearInterval(interval);
@@ -41,14 +41,14 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
     try {
       console.log('🔄 Loading expenses data...');
       const response = await fetch('/api/admin/expenses');
-      
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-      
+
       const result = await response.json();
       console.log('📊 Expenses data received:', result);
-      
+
       if (result.success) {
         setExpenses(result.data.expenses || []);
         setSummary(result.data);
@@ -67,7 +67,7 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     try {
       const expenseData = {
         ...formData,
@@ -93,7 +93,7 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
       if (result.success) {
         // Refresh data
         await loadExpenses();
-        
+
         // Reset form
         setFormData({
           kategori: '',
@@ -155,7 +155,7 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
   };
 
   const mostFrequentCategory = Object.entries(calculatedSummary.byCategory)
-    .sort(([,a]: any, [,b]: any) => b.total - a.total)[0];
+    .sort(([, a]: any, [, b]: any) => b.total - a.total)[0];
 
   if (loading) {
     return (
@@ -265,7 +265,7 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
                 </label>
                 <select
                   value={formData.kategori}
-                  onChange={(e) => setFormData({...formData, kategori: e.target.value})}
+                  onChange={(e) => setFormData({ ...formData, kategori: e.target.value })}
                   className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
                   required
                 >
@@ -283,7 +283,7 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
                 <input
                   type="number"
                   value={formData.jumlah}
-                  onChange={(e) => setFormData({...formData, jumlah: e.target.value})}
+                  onChange={(e) => setFormData({ ...formData, jumlah: e.target.value })}
                   className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
                   placeholder="0"
                   min="0"
@@ -299,7 +299,7 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
                 <input
                   type="date"
                   value={formData.tanggal}
-                  onChange={(e) => setFormData({...formData, tanggal: e.target.value})}
+                  onChange={(e) => setFormData({ ...formData, tanggal: e.target.value })}
                   className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
                   required
                 />
@@ -311,7 +311,7 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
                 </label>
                 <textarea
                   value={formData.deskripsi}
-                  onChange={(e) => setFormData({...formData, deskripsi: e.target.value})}
+                  onChange={(e) => setFormData({ ...formData, deskripsi: e.target.value })}
                   className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
                   rows={3}
                   placeholder="Deskripsi pengeluaran..."
@@ -350,27 +350,40 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
               </tr>
             </thead>
             <tbody>
-              {expenses.map((expense) => (
-                <tr key={expense.id} className="border-b hover:bg-gray-50 transition-colors">
-                  <td className="py-3 px-4">
-                    {new Date(expense.tanggal || expense.date?.toDate?.() || expense.date).toLocaleDateString('id-ID')}
-                  </td>
-                  <td className="py-3 px-4">
-                    <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-medium">
-                      {expense.kategori}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4">
-                    {expense.deskripsi || '-'}
-                  </td>
-                  <td className="py-3 px-4 font-bold text-red-600">
-                    Rp {(expense.jumlah || 0).toLocaleString('id-ID')}
-                  </td>
-                  <td className="py-3 px-4 text-sm text-gray-600">
-                    {expense.created_by_name || 'System'}
-                  </td>
-                </tr>
-              ))}
+              {expenses.map((expense: any) => {
+                // Safe date formatting - handle ISO string or Date object
+                let displayDate = '-';
+                try {
+                  const dateValue = expense.date || expense.tanggal;
+                  if (dateValue) {
+                    displayDate = new Date(dateValue).toLocaleDateString('id-ID');
+                  }
+                } catch {
+                  displayDate = '-';
+                }
+
+                // Get values with fallbacks
+                const amount = expense.amount || expense.jumlah || 0;
+                const category = expense.category || expense.kategori || 'Lainnya';
+                const description = expense.description || expense.deskripsi || '-';
+                const createdBy = expense.createdBy || expense.created_by || expense.created_by_name || 'System';
+
+                return (
+                  <tr key={expense.id} className="border-b hover:bg-gray-50 transition-colors">
+                    <td className="py-3 px-4">{displayDate}</td>
+                    <td className="py-3 px-4">
+                      <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-medium">
+                        {category}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4">{description}</td>
+                    <td className="py-3 px-4 font-bold text-red-600">
+                      Rp {amount.toLocaleString('id-ID')}
+                    </td>
+                    <td className="py-3 px-4 text-sm text-gray-600">{createdBy}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -390,23 +403,23 @@ export default function ExpenseManager({ userId, onAction }: ExpenseManagerProps
           <h3 className="text-xl font-bold mb-4">Ringkasan per Kategori</h3>
           <div className="space-y-3">
             {Object.entries(calculatedSummary.byCategory)
-              .sort(([,a]: any, [,b]: any) => b.total - a.total)
+              .sort(([, a]: any, [, b]: any) => b.total - a.total)
               .map(([category, data]: [string, any]) => (
-              <div key={category} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-                <div className="flex items-center space-x-3">
-                  <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-                  <span className="font-medium">{category}</span>
-                </div>
-                <div className="text-right">
-                  <div className="font-bold text-red-600">
-                    Rp {data.total.toLocaleString('id-ID')}
+                <div key={category} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                  <div className="flex items-center space-x-3">
+                    <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+                    <span className="font-medium">{category}</span>
                   </div>
-                  <div className="text-sm text-gray-500">
-                    {data.count} transaksi
+                  <div className="text-right">
+                    <div className="font-bold text-red-600">
+                      Rp {data.total.toLocaleString('id-ID')}
+                    </div>
+                    <div className="text-sm text-gray-500">
+                      {data.count} transaksi
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
           </div>
         </div>
       )}

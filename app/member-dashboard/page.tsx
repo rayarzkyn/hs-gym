@@ -8,9 +8,9 @@ import AttendanceHistory from './components/AttendanceHistory';
 import FacilityStatus from './components/FacilityStatus';
 import MemberDashboardStats from './components/MemberDashboardStats';
 import MembershipInfo from './components/MembershipInfo';
+import PendingExtension from './components/PendingExtension';
 
 // 🔥 Custom Hook untuk SSE
-// 🔥 PERBAIKAN: SSE Hook dengan error handling
 function useFacilitiesStream(userType: string) {
   const [facilities, setFacilities] = useState<any[]>([]);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
@@ -27,7 +27,6 @@ function useFacilitiesStream(userType: string) {
         
         console.log(`🔗 Connecting SSE for ${userType}...`);
         
-        // 🔥 PERBAIKAN: Tambahkan cache busting
         eventSource = new EventSource(`/api/facilities/stream?userType=${userType}&_t=${Date.now()}`);
         
         eventSource.onopen = () => {
@@ -71,7 +70,7 @@ function useFacilitiesStream(userType: string) {
             eventSource = null;
           }
           
-          // 🔥 PERBAIKAN: Tunggu 3 detik sebelum reconnect
+          // Tunggu 3 detik sebelum reconnect
           setTimeout(() => {
             if (isMounted) {
               console.log('🔄 Attempting to reconnect SSE...');
@@ -120,6 +119,7 @@ interface MemberData {
   kunjungan_bulan_ini: number;
   riwayat_transaksi: any[];
   riwayat_kunjungan: any[];
+  pending_extension?: any;
 }
 
 interface Facility {
@@ -182,6 +182,7 @@ export default function MemberDashboard() {
   const [attendanceHistory, setAttendanceHistory] = useState<AttendanceHistory[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [pendingExtension, setPendingExtension] = useState<any>(null);
 
   // 🔥 Gunakan SSE Hook untuk real-time facilities
   const { 
@@ -215,17 +216,27 @@ export default function MemberDashboard() {
     setUser(userObj);
     fetchMemberData(userObj.username);
     checkTodayAttendance(userObj.username);
+    
+    // Cek pending extension dari localStorage
+    const pendingExt = localStorage.getItem('pendingExtension');
+    if (pendingExt) {
+      try {
+        setPendingExtension(JSON.parse(pendingExt));
+      } catch (e) {
+        console.error('Error parsing pending extension:', e);
+      }
+    }
   }, [router]);
 
-useEffect(() => {
-  // Hanya atur loading state, data sudah diambil di fetchMemberData
-  if ((activeTab === 'history' && attendanceHistory.length === 0) || 
-      (activeTab === 'payment' && transactions.length === 0)) {
-    setHistoryLoading(true);
-  } else {
-    setHistoryLoading(false);
-  }
-}, [activeTab, attendanceHistory.length, transactions.length]);
+  useEffect(() => {
+    if ((activeTab === 'history' && attendanceHistory.length === 0) || 
+        (activeTab === 'payment' && transactions.length === 0)) {
+      setHistoryLoading(true);
+    } else {
+      setHistoryLoading(false);
+    }
+  }, [activeTab, attendanceHistory.length, transactions.length]);
+
   const checkTodayAttendance = async (username: string) => {
     try {
       const today = new Date().toISOString().split('T')[0];
@@ -266,10 +277,14 @@ useEffect(() => {
         
         setMemberData(result.data);
         
-        // 🔥 PERBAIKAN 1: Ambil riwayat kunjungan dari data API
+        // Set pending extension dari data member
+        if (result.data.pending_extension) {
+          setPendingExtension(result.data.pending_extension);
+        }
+        
+        // Ambil riwayat kunjungan dari data API
         if (result.data.riwayat_kunjungan && Array.isArray(result.data.riwayat_kunjungan)) {
           const formattedAttendanceHistory = result.data.riwayat_kunjungan.map((visit: any) => {
-            // Format data dari API ke format yang diharapkan komponen
             const visitDate = visit.tanggal ? (visit.tanggal.toDate ? visit.tanggal.toDate() : new Date(visit.tanggal)) : new Date();
             
             return {
@@ -283,11 +298,10 @@ useEffect(() => {
             };
           });
           
-          console.log('📋 Formatted attendance history:', formattedAttendanceHistory.length, 'items');
           setAttendanceHistory(formattedAttendanceHistory);
         }
         
-        // 🔥 PERBAIKAN 2: Ambil riwayat transaksi dari data API
+        // Ambil riwayat transaksi dari data API
         if (result.data.riwayat_transaksi && Array.isArray(result.data.riwayat_transaksi)) {
           const formattedTransactions = result.data.riwayat_transaksi.map((transaction: any) => {
             const transDate = transaction.tanggal ? 
@@ -305,7 +319,6 @@ useEffect(() => {
             };
           });
           
-          console.log('💳 Formatted transactions:', formattedTransactions.length, 'items');
           setTransactions(formattedTransactions);
         }
         
@@ -379,8 +392,6 @@ useEffect(() => {
         alert(`✅ Berhasil memilih ${facilityName}! Selamat berolahraga 🏋️‍♂️`);
         setCurrentFacility(facilityName);
         setShowFacilityModal(false);
-        
-        console.log('✅ Facility selected, waiting for SSE update...');
       } else {
         alert('Gagal memilih fasilitas: ' + result.error);
       }
@@ -393,48 +404,48 @@ useEffect(() => {
   };
 
   const handleCheckout = async () => {
-  if (!user || !attendanceId) return;
+    if (!user || !attendanceId) return;
 
-  try {
-    const response = await fetch('/api/attendance/checkout', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        attendanceId: attendanceId,
-        userId: user.username
-      }),
-    });
+    try {
+      const response = await fetch('/api/attendance/checkout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          attendanceId: attendanceId,
+          userId: user.username
+        }),
+      });
 
-    const result = await response.json();
+      const result = await response.json();
 
-    if (result.success) {
-      alert('✅ Check-out berhasil! Sampai jumpa besok! 👋');
-      setIsCheckedInToday(false);
-      setCurrentFacility(null);
-      setAttendanceId(null);
-      
-      // 🔥 FORCE REFRESH FACILITIES DATA
-      setTimeout(() => {
-        fetch('/api/facilities?userType=member')
-          .then(res => res.json())
-          .then(result => {
-            if (result.success) {
-              setFacilities(result.data);
-              console.log('🔄 Facilities manually refreshed after checkout');
-            }
-          });
-      }, 1000);
-    } else {
-      alert('Gagal check-out: ' + result.error);
+      if (result.success) {
+        alert('✅ Check-out berhasil! Sampai jumpa besok! 👋');
+        setIsCheckedInToday(false);
+        setCurrentFacility(null);
+        setAttendanceId(null);
+        
+        // Refresh facilities data
+        setTimeout(() => {
+          fetch('/api/facilities?userType=member')
+            .then(res => res.json())
+            .then(result => {
+              if (result.success) {
+                setFacilities(result.data);
+              }
+            });
+        }, 1000);
+      } else {
+        alert('Gagal check-out: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Check-out error:', error);
+      alert('Terjadi kesalahan saat check-out.');
     }
-  } catch (error) {
-    console.error('Check-out error:', error);
-    alert('Terjadi kesalahan saat check-out.');
-  }
-};
+  };
 
+  // 🔥 HANDLER PERPANJANGAN MEMBERSHIP YANG DIPERBAIKI
   const handleExtendMembership = async (plan: string) => {
     if (!user || !memberData) {
       alert('Data member tidak ditemukan');
@@ -449,12 +460,20 @@ useEffect(() => {
     };
 
     const price = planPrices[plan] || 120000;
+    
+    // Hitung durasi perpanjangan
+    const durationText = plan === 'Bulanan' ? '30 hari (1 bulan)' :
+                        plan === 'Triwulan' ? '90 hari (3 bulan)' :
+                        plan === 'Semester' ? '180 hari (6 bulan)' :
+                        '365 hari (12 bulan)';
 
-    if (!confirm(`Anda akan memperpanjang membership ${plan} seharga ${formatCurrency(price)}. Lanjutkan?`)) {
+    if (!confirm(`Anda akan memperpanjang membership ${plan} seharga ${formatCurrency(price)} selama ${durationText}.\n\nLanjutkan ke pembayaran?`)) {
       return;
     }
 
     try {
+      console.log(`📝 Requesting membership extension: ${plan} for ${user.username}`);
+      
       const response = await fetch('/api/member/extend-membership', {
         method: 'POST',
         headers: {
@@ -471,16 +490,44 @@ useEffect(() => {
       const result = await response.json();
 
       if (result.success) {
-        alert('✅ Permintaan perpanjangan berhasil! Silakan lakukan pembayaran.');
-        // Refresh data member
-        fetchMemberData(user.username);
-        setActiveTab('payment');
+        // Simpan data perpanjangan untuk payment page
+        const extensionData = {
+          type: 'membership_extension',
+          user: {
+            username: user.username,
+            nomor_member: memberData.nomor_member,
+            fullName: memberData.nama,
+            membership_plan: plan,
+            membership_price: price,
+            duration: durationText
+          },
+          transactionId: result.data.transactionId,
+          extensionData: result.data
+        };
+        
+        localStorage.setItem('pendingExtension', JSON.stringify(extensionData));
+        setPendingExtension(extensionData);
+        
+        // Tampilkan alert informatif
+        alert(`✅ Permintaan perpanjangan berhasil!\n\nAnda akan diarahkan ke halaman pembayaran untuk paket ${plan}.\n\nDurasi: ${durationText}\nHarga: ${formatCurrency(price)}`);
+        
+        // 🔥 REDIRECT OTOMATIS ke payment page
+        setTimeout(() => {
+          router.push(`/member/payment?type=extension&transactionId=${result.data.transactionId}`);
+        }, 1000);
+        
       } else {
-        alert('Gagal: ' + result.error);
+        alert('❌ Gagal: ' + result.error);
       }
     } catch (error) {
       console.error('Extend membership error:', error);
-      alert('Terjadi kesalahan. Silakan coba lagi.');
+      alert('⚠️ Terjadi kesalahan. Silakan coba lagi.');
+    }
+  };
+
+  const handleViewPendingExtension = () => {
+    if (pendingExtension?.transactionId) {
+      router.push(`/member/payment?type=extension&transactionId=${pendingExtension.transactionId}`);
     }
   };
 
@@ -545,24 +592,6 @@ useEffect(() => {
     }
   };
 
-  const getMembershipPlanInfo = (plan: string) => {
-    const plans: any = {
-      'Bulanan': { color: 'from-blue-500 to-cyan-500', price: 120000, duration: '1 bulan' },
-      'Triwulan': { color: 'from-purple-500 to-pink-500', price: 300000, duration: '3 bulan' },
-      'Semester': { color: 'from-green-500 to-emerald-500', price: 550000, duration: '6 bulan' },
-      'Tahunan': { color: 'from-orange-500 to-red-500', price: 1000000, duration: '12 bulan' }
-    };
-    return plans[plan] || plans['Bulanan'];
-  };
-
-  const getRemainingDaysText = (days: number): string => {
-    if (days === 0) return 'Habis';
-    if (days === 1) return '1 hari';
-    if (days < 7) return `${days} hari`;
-    if (days < 30) return `${Math.ceil(days / 7)} minggu`;
-    return `${Math.ceil(days / 30)} bulan`;
-  };
-
   const formatDate = (dateInput: string | Date) => {
     let date;
     if (dateInput instanceof Date) {
@@ -577,33 +606,6 @@ useEffect(() => {
       day: 'numeric',
       month: 'long',
       year: 'numeric'
-    });
-  };
-
-  const formatTime = (dateInput: string | Date) => {
-    let date;
-    if (dateInput instanceof Date) {
-      date = dateInput;
-    } else if (typeof dateInput === 'string') {
-      date = new Date(dateInput);
-    } else {
-      return 'Waktu tidak valid';
-    }
-    
-    return date.toLocaleTimeString('id-ID', {
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
-  const formatDateTime = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('id-ID', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
     });
   };
 
@@ -635,6 +637,7 @@ useEffect(() => {
   const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    localStorage.removeItem('pendingExtension');
     router.push('/');
   };
 
@@ -890,13 +893,20 @@ useEffect(() => {
       );
     }
 
-    const planInfo = getMembershipPlanInfo(memberData.membership_plan);
-    const remainingDaysText = getRemainingDaysText(memberData.sisa_hari);
-
     switch (activeTab) {
       case 'dashboard':
         return (
           <div className="space-y-6">
+            {/* Pending Extension Notification */}
+            {pendingExtension && (
+              <PendingExtension
+                transactionId={pendingExtension.transactionId}
+                plan={pendingExtension.user?.membership_plan}
+                price={pendingExtension.user?.membership_price}
+                onViewDetails={handleViewPendingExtension}
+              />
+            )}
+
             <div className={`rounded-2xl p-6 text-white ${
               isCheckedInToday 
                 ? 'bg-gradient-to-r from-green-500 to-emerald-600' 
@@ -1130,8 +1140,11 @@ useEffect(() => {
             )}
             
             <div className="p-6 border-t">
-              <button className="w-full bg-blue-500 text-white py-3 rounded-lg hover:bg-blue-600 transition font-medium">
-                Lihat Semua Transaksi
+              <button 
+                onClick={() => handleExtendMembership(memberData.membership_plan)}
+                className="w-full bg-blue-500 text-white py-3 rounded-lg hover:bg-blue-600 transition font-medium"
+              >
+                Buat Permintaan Perpanjangan Baru
               </button>
             </div>
           </div>

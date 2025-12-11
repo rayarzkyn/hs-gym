@@ -1,9 +1,9 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { db } from '@/lib/firebase';
-import { 
-  collection, 
-  onSnapshot, 
+import {
+  collection,
+  onSnapshot,
   query
 } from 'firebase/firestore';
 
@@ -14,7 +14,7 @@ interface ReportsPanelProps {
 interface ReportData {
   period: string;
   dateRange: string;
-  
+
   // Member Statistics
   activeMembers: number;
   expiredMembers: number;
@@ -22,7 +22,7 @@ interface ReportData {
   newMembersThisMonth: number;
   totalMembershipRevenue: number;
   thisMonthRevenue: number;
-  
+
   // Non-Member Statistics
   totalNonMembers: number;
   activeNonMembers: number;
@@ -30,12 +30,12 @@ interface ReportData {
   nonMemberRevenueTotal: number;
   nonMemberRevenueToday: number;
   nonMemberRevenueThisMonth: number;
-  
+
   // Visitor Statistics
   totalVisitors: number;
   memberVisitors: number;
   nonMemberVisitors: number;
-  
+
   // Detailed Lists
   memberList: Array<{
     id: string;
@@ -46,7 +46,7 @@ interface ReportData {
     status: string;
     masaAktif: Date;
   }>;
-  
+
   nonMemberList: Array<{
     id: string;
     dailyCode: string;
@@ -57,7 +57,7 @@ interface ReportData {
     status: string;
     paymentMethod: string;
   }>;
-  
+
   dailyNonMemberStats: Array<{
     date: string;
     count: number;
@@ -69,7 +69,7 @@ interface ReportData {
       paymentMethod: string;
     }>;
   }>;
-  
+
   nonMemberTransactions: Array<{
     id: string;
     dailyCode: string;
@@ -111,7 +111,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
   const [reportData, setReportData] = useState<ReportData>(defaultReportData);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
-  
+
   const [membersData, setMembersData] = useState<any[]>([]);
   const [nonMembersData, setNonMembersData] = useState<any[]>([]);
   const [nonMemberTransactionsData, setNonMemberTransactionsData] = useState<any[]>([]);
@@ -119,9 +119,9 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
   // 🔥 REAL-TIME DATA FETCHING - MEMBERS
   useEffect(() => {
     console.log('🔥 Setting up REAL-TIME listeners for members...');
-    
+
     const membersQuery = query(collection(db, 'members'));
-    const unsubscribeMembers = onSnapshot(membersQuery, 
+    const unsubscribeMembers = onSnapshot(membersQuery,
       (snapshot) => {
         const members = snapshot.docs.map(doc => {
           const data = doc.data();
@@ -137,7 +137,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
             status: data.status || 'unknown'
           };
         });
-        
+
         console.log('👥 Members updated:', members.length);
         setMembersData(members);
       },
@@ -164,7 +164,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
             paymentMethod: data.payment_method || 'qris'
           };
         });
-        
+
         console.log('🎫 Non-members updated:', nonMembers.length);
         setNonMembersData(nonMembers);
       },
@@ -190,7 +190,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
             status: data.status || 'completed'
           };
         });
-        
+
         console.log('💰 Non-member transactions updated:', transactions.length);
         setNonMemberTransactionsData(transactions);
       },
@@ -218,20 +218,20 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
     const today = now.toISOString().split('T')[0];
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
-    
+
     // === 1. MEMBER STATISTICS ===
     // Total revenue dari semua membership_price
     const totalMembershipRevenue = membersData.reduce((sum, member) => {
       return sum + (member.membershipPrice || 0);
     }, 0);
-    
+
     // Member aktif (masa_aktif belum expired)
     const activeMembers = membersData.filter(member => {
       if (member.status !== 'active') return false;
       if (!member.masa_aktif) return false;
       return member.masa_aktif >= now;
     }).length;
-    
+
     // Member expired
     const expiredMembers = membersData.filter(member => {
       if (member.status === 'expired') return true;
@@ -240,25 +240,25 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
       }
       return false;
     }).length;
-    
+
     // Member baru bulan ini
     const newMembersThisMonth = membersData.filter(member => {
       const joinDate = member.createdAt || member.tanggal_daftar;
       if (!joinDate) return false;
-      
+
       const joinDateObj = joinDate instanceof Date ? joinDate : new Date(joinDate);
       return (
         joinDateObj.getMonth() === currentMonth &&
         joinDateObj.getFullYear() === currentYear
       );
     }).length;
-    
+
     // Revenue dari member baru bulan ini
     const thisMonthRevenue = membersData
       .filter(member => {
         const joinDate = member.createdAt || member.tanggal_daftar;
         if (!joinDate) return false;
-        
+
         const joinDateObj = joinDate instanceof Date ? joinDate : new Date(joinDate);
         return (
           joinDateObj.getMonth() === currentMonth &&
@@ -266,16 +266,16 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
         );
       })
       .reduce((sum, member) => sum + (member.membershipPrice || 0), 0);
-    
+
     // === 2. NON-MEMBER STATISTICS ===
     const totalNonMembers = nonMembersData.length;
-    
+
     // Non-members yang masih aktif (belum expired)
     const activeNonMembers = nonMembersData.filter(nm => {
       if (nm.status !== 'active') return false;
       return nm.expiredAt >= now;
     }).length;
-    
+
     // Non-members yang dibuat hari ini
     const todayNonMembers = nonMembersData.filter(nm => {
       const createDate = nm.createdAt;
@@ -283,12 +283,12 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
       const createDateStr = createDate.toISOString().split('T')[0];
       return createDateStr === today;
     }).length;
-    
+
     // Total revenue dari semua non-members (jumlahkan harga)
     const nonMemberRevenueTotal = nonMembersData.reduce((sum, nm) => {
       return sum + (nm.harga || 0);
     }, 0);
-    
+
     // Revenue dari non-members hari ini
     const nonMemberRevenueToday = nonMembersData
       .filter(nm => {
@@ -298,7 +298,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
         return createDateStr === today;
       })
       .reduce((sum, nm) => sum + (nm.harga || 0), 0);
-    
+
     // Revenue dari non-members bulan ini
     const nonMemberRevenueThisMonth = nonMembersData
       .filter(nm => {
@@ -311,22 +311,22 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
         );
       })
       .reduce((sum, nm) => sum + (nm.harga || 0), 0);
-    
+
     // === 3. TRANSACTION STATISTICS ===
     // Revenue dari transactions (jika ada data transaction terpisah)
     const transactionRevenue = nonMemberTransactionsData.reduce((sum, tx) => {
       return sum + (tx.jumlah || 0);
     }, 0);
-    
+
     // === 4. DAILY NON-MEMBER STATISTICS ===
     const dailyStatsMap = new Map<string, { count: number, revenue: number, details: any[] }>();
-    
+
     nonMembersData.forEach(nm => {
       if (!nm.createdAt) return;
-      
+
       const dateStr = nm.createdAt.toISOString().split('T')[0];
       const current = dailyStatsMap.get(dateStr) || { count: 0, revenue: 0, details: [] };
-      
+
       current.count += 1;
       current.revenue += nm.harga || 0;
       current.details.push({
@@ -335,10 +335,10 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
         harga: nm.harga,
         paymentMethod: nm.paymentMethod
       });
-      
+
       dailyStatsMap.set(dateStr, current);
     });
-    
+
     const dailyNonMemberStats = Array.from(dailyStatsMap.entries())
       .map(([date, data]) => ({
         date,
@@ -347,16 +347,16 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
         details: data.details
       }))
       .sort((a, b) => b.date.localeCompare(a.date)); // Urutkan dari terbaru
-    
+
     // === 5. VISITOR STATISTICS ===
     // Ini bisa diisi dari visits data jika ada
     const totalVisitors = activeMembers + activeNonMembers;
-    
+
     // Update report data
     setReportData({
       period: 'Harian',
       dateRange: now.toLocaleDateString('id-ID'),
-      
+
       // Member Statistics
       activeMembers,
       expiredMembers,
@@ -364,7 +364,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
       newMembersThisMonth,
       totalMembershipRevenue,
       thisMonthRevenue,
-      
+
       // Non-Member Statistics
       totalNonMembers,
       activeNonMembers,
@@ -372,12 +372,12 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
       nonMemberRevenueTotal: Math.max(nonMemberRevenueTotal, transactionRevenue),
       nonMemberRevenueToday,
       nonMemberRevenueThisMonth,
-      
+
       // Visitor Statistics
       totalVisitors,
       memberVisitors: activeMembers,
       nonMemberVisitors: activeNonMembers,
-      
+
       // Detailed Lists
       memberList: membersData.map(m => ({
         id: m.id,
@@ -388,7 +388,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
         status: m.status,
         masaAktif: m.masa_aktif
       })),
-      
+
       nonMemberList: nonMembersData.map(nm => ({
         id: nm.id,
         dailyCode: nm.dailyCode,
@@ -399,9 +399,9 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
         status: nm.status,
         paymentMethod: nm.paymentMethod
       })),
-      
+
       dailyNonMemberStats,
-      
+
       nonMemberTransactions: nonMemberTransactionsData.map(tx => ({
         id: tx.id,
         dailyCode: tx.dailyCode,
@@ -412,9 +412,9 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
         status: tx.status
       }))
     });
-    
+
     setLoading(false);
-    
+
     console.log('📊 All statistics calculated:', {
       members: membersData.length,
       nonMembers: nonMembersData.length,
@@ -426,10 +426,10 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
   const generateDetailedReport = async () => {
     try {
       setLoading(true);
-      
+
       // Calculate statistics dengan data terbaru
       calculateAllStatistics();
-      
+
       const now = new Date();
       let periodLabel: string;
       let dateRange: string;
@@ -439,7 +439,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
           periodLabel = 'Harian';
           dateRange = now.toLocaleDateString('id-ID');
           break;
-        
+
         case 'weekly':
           periodLabel = 'Mingguan';
           const weekStart = new Date(now);
@@ -448,14 +448,14 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
           weekEnd.setDate(weekStart.getDate() + 6);
           dateRange = `${weekStart.toLocaleDateString('id-ID')} - ${weekEnd.toLocaleDateString('id-ID')}`;
           break;
-        
+
         case 'monthly':
           periodLabel = 'Bulanan';
           const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
           const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
           dateRange = `${monthStart.toLocaleDateString('id-ID')} - ${monthEnd.toLocaleDateString('id-ID')}`;
           break;
-        
+
         default: // custom
           periodLabel = 'Kustom';
           dateRange = 'Tanggal Kustom';
@@ -470,7 +470,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
 
       console.log('📊 Generated report:', updatedReport);
       setReportData(updatedReport);
-      
+
     } catch (error) {
       console.error('Error generating detailed report:', error);
       alert('Terjadi kesalahan saat membuat laporan detail');
@@ -482,7 +482,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
   const exportToHTML = async () => {
     try {
       setExporting(true);
-      
+
       // Buat konten HTML untuk laporan lengkap
       const content = `
         <!DOCTYPE html>
@@ -693,8 +693,8 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
                 </tr>
               `).join('')}
             </table>
-            ${reportData.nonMemberTransactions.length > 20 ? 
-              `<p style="text-align: center; color: #6c757d;">... dan ${reportData.nonMemberTransactions.length - 20} transaksi lainnya</p>` : ''}
+            ${reportData.nonMemberTransactions.length > 20 ?
+            `<p style="text-align: center; color: #6c757d;">... dan ${reportData.nonMemberTransactions.length - 20} transaksi lainnya</p>` : ''}
           </div>
           ` : ''}
           
@@ -740,8 +740,8 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
                 <td>Rata-rata per Orang</td>
                 <td>${formatCurrency(reportData.totalMembers > 0 ? reportData.totalMembershipRevenue / reportData.totalMembers : 0)}</td>
                 <td>${formatCurrency(reportData.totalNonMembers > 0 ? reportData.nonMemberRevenueTotal / reportData.totalNonMembers : 0)}</td>
-                <td>${formatCurrency((reportData.totalMembers + reportData.totalNonMembers) > 0 ? 
-                  (reportData.totalMembershipRevenue + reportData.nonMemberRevenueTotal) / (reportData.totalMembers + reportData.totalNonMembers) : 0)}</td>
+                <td>${formatCurrency((reportData.totalMembers + reportData.totalNonMembers) > 0 ?
+              (reportData.totalMembershipRevenue + reportData.nonMemberRevenueTotal) / (reportData.totalMembers + reportData.totalNonMembers) : 0)}</td>
               </tr>
             </table>
           </div>
@@ -758,16 +758,16 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
       // Buat blob dan download
       const blob = new Blob([content], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
-      
+
       const link = document.createElement('a');
       link.href = url;
       link.download = `Laporan_HSGym_${reportData.period}_${new Date().toISOString().split('T')[0]}.html`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      
+
       alert('Laporan lengkap berhasil diexport! File HTML akan terbuka di browser baru.');
-      
+
     } catch (error) {
       console.error('Error exporting report:', error);
       alert('Terjadi kesalahan saat mengexport laporan');
@@ -814,7 +814,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
             <h2 className="text-2xl font-bold text-gray-800">Laporan Lengkap</h2>
             <p className="text-gray-600">Statistik Member & Non-Member Harian</p>
           </div>
-          
+
           <div className="flex flex-wrap gap-3">
             <select
               value={selectedReport}
@@ -848,7 +848,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
             <span>📄</span>
             <span>{exporting ? 'Exporting...' : 'Export Laporan Lengkap'}</span>
           </button>
-          
+
           <button
             onClick={onRefresh}
             disabled={exporting}
@@ -878,7 +878,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
       {/* Summary Statistics */}
       <div className="bg-white rounded-xl shadow-lg p-6">
         <h3 className="text-xl font-bold text-gray-800 mb-6">Ringkasan Statistik</h3>
-        
+
         {/* Key Metrics */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <div className="bg-blue-50 rounded-lg p-4 text-center">
@@ -888,7 +888,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
               {reportData.activeMembers} aktif • {reportData.expiredMembers} expired
             </div>
           </div>
-          
+
           <div className="bg-green-50 rounded-lg p-4 text-center">
             <div className="text-2xl font-bold text-green-600">{formatNumber(reportData.totalNonMembers)}</div>
             <div className="text-sm text-green-800">Total Non-Member</div>
@@ -896,7 +896,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
               {reportData.activeNonMembers} aktif • {reportData.todayNonMembers} hari ini
             </div>
           </div>
-          
+
           <div className="bg-purple-50 rounded-lg p-4 text-center">
             <div className="text-2xl font-bold text-purple-600">{formatCurrency(reportData.totalMembershipRevenue)}</div>
             <div className="text-sm text-purple-800">Revenue Member</div>
@@ -904,7 +904,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
               {reportData.newMembersThisMonth} baru bulan ini
             </div>
           </div>
-          
+
           <div className="bg-orange-50 rounded-lg p-4 text-center">
             <div className="text-2xl font-bold text-orange-600">{formatCurrency(reportData.nonMemberRevenueTotal)}</div>
             <div className="text-sm text-orange-800">Revenue Non-Member</div>
@@ -922,7 +922,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
               {formatCurrency(reportData.totalMembershipRevenue + reportData.nonMemberRevenueTotal)}
             </div>
             <div className="text-gray-600">
-              = <span className="text-green-600 font-medium">{formatCurrency(reportData.totalMembershipRevenue)}</span> (Member) + 
+              = <span className="text-green-600 font-medium">{formatCurrency(reportData.totalMembershipRevenue)}</span> (Member) +
               <span className="text-blue-600 font-medium ml-2">{formatCurrency(reportData.nonMemberRevenueTotal)}</span> (Non-Member)
             </div>
           </div>
@@ -992,7 +992,7 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
                 </div>
               </div>
             </div>
-            
+
             <div className="bg-green-50 rounded-lg p-4">
               <h5 className="font-medium text-green-800 mb-2">🎫 Non-Member</h5>
               <div className="space-y-2">
@@ -1021,13 +1021,13 @@ export default function ReportsPanel({ onRefresh }: ReportsPanelProps) {
         <div className="p-4 bg-gray-50 rounded-lg">
           <h4 className="font-semibold text-gray-800 mb-2">📋 Ringkasan Laporan</h4>
           <p className="text-gray-700 text-sm">
-            Total ada <strong>{reportData.totalMembers} member</strong> dengan revenue 
-            <strong> {formatCurrency(reportData.totalMembershipRevenue)}</strong> dan 
-            <strong> {reportData.totalNonMembers} non-member harian</strong> dengan revenue 
-            <strong> {formatCurrency(reportData.nonMemberRevenueTotal)}</strong>. 
-            Bulan ini terdapat <strong>{reportData.newMembersThisMonth} member baru</strong> dan 
-            <strong> {reportData.todayNonMembers} non-member hari ini</strong>. 
-            Total pendapatan keseluruhan adalah 
+            Total ada <strong>{reportData.totalMembers} member</strong> dengan revenue
+            <strong> {formatCurrency(reportData.totalMembershipRevenue)}</strong> dan
+            <strong> {reportData.totalNonMembers} non-member harian</strong> dengan revenue
+            <strong> {formatCurrency(reportData.nonMemberRevenueTotal)}</strong>.
+            Bulan ini terdapat <strong>{reportData.newMembersThisMonth} member baru</strong> dan
+            <strong> {reportData.todayNonMembers} non-member hari ini</strong>.
+            Total pendapatan keseluruhan adalah
             <strong> {formatCurrency(reportData.totalMembershipRevenue + reportData.nonMemberRevenueTotal)}</strong>.
           </p>
         </div>

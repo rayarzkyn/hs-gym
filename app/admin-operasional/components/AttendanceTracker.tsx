@@ -25,12 +25,16 @@ interface AttendanceTrackerProps {
   data: TodayVisit[];
   membersData: MemberData[];
   detailed?: boolean;
+  showSystemInfo?: boolean;
+  facilityActivityCount?: number; // Jumlah aktivitas fasilitas (tidak dihitung)
 }
 
 export default function AttendanceTracker({ 
   data, 
   membersData = [],
-  detailed = false
+  detailed = false,
+  showSystemInfo = true,
+  facilityActivityCount = 0
 }: AttendanceTrackerProps) {
   
   // Filter hanya yang checked-in
@@ -105,6 +109,39 @@ export default function AttendanceTracker({
     }
   };
 
+  // 🔥 INFORMASI SISTEM
+  const SystemInfo = () => (
+    <div className="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg">
+      <div className="flex items-start space-x-3">
+        <div className="bg-blue-100 p-2 rounded-lg">
+          <span className="text-blue-600 text-xl">💡</span>
+        </div>
+        <div className="flex-1">
+          <h4 className="font-semibold text-blue-800 mb-2">Sistem Penghitungan Kunjungan</h4>
+          <div className="text-sm text-blue-700 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                <span>Check-in harian = <span className="font-bold">+1 kunjungan</span></span>
+              </div>
+              <span className="font-bold">{nonMemberCheckins} kunjungan</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <span className="w-2 h-2 bg-gray-400 rounded-full"></span>
+                <span>Pilih/ganti fasilitas = <span className="font-bold text-gray-700">TIDAK dihitung</span></span>
+              </div>
+              <span className="text-gray-600">{facilityActivityCount} aktivitas</span>
+            </div>
+            <div className="mt-2 pt-2 border-t border-blue-200 text-xs">
+              <span className="text-blue-600">📊 Data ini hanya menampilkan check-in harian. Aktivitas fasilitas dikecualikan.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
   if (!detailed) {
     return (
       <div className="bg-white rounded-xl p-6 shadow-lg border">
@@ -134,6 +171,9 @@ export default function AttendanceTracker({
             </div>
           </div>
         </div>
+
+        {/* 🔥 INFORMASI SISTEM */}
+        {showSystemInfo && <SystemInfo />}
 
         {/* Current Check-ins */}
         {currentCheckedIn.length > 0 ? (
@@ -244,6 +284,13 @@ export default function AttendanceTracker({
           </div>
         </div>
       </div>
+
+      {/* 🔥 INFORMASI SISTEM untuk detailed view */}
+      {showSystemInfo && (
+        <div className="px-6 pt-6">
+          <SystemInfo />
+        </div>
+      )}
 
       {data.length > 0 ? (
         <div className="overflow-x-auto">

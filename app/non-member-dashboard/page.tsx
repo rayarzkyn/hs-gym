@@ -1,9 +1,10 @@
 'use client';
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { db } from '@/lib/firebase'; // Asumsi Anda sudah setup Firebase
-import { collection, query, onSnapshot, doc, updateDoc, arrayUnion, getDoc, where, getDocs, addDoc } from 'firebase/firestore';
+import { db } from '@/lib/firebase';
+import { collection, query, onSnapshot } from 'firebase/firestore';
 import io from 'socket.io-client';
+import Image from 'next/image';
 
 interface NonMemberData {
   daily_code: string;
@@ -17,9 +18,12 @@ interface NonMemberData {
   expired_at: string;
   created_at: string;
   visits: any[];
+  facility_activities: any[];
   total_visits: number;
-  active_visit: any;
+  active_visit: boolean;
+  manual_checkin: boolean;
   current_facility?: string;
+  current_facility_name?: string;
 }
 
 interface UserData {
@@ -62,7 +66,9 @@ export default function NonMemberDashboard() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [facilityLoading, setFacilityLoading] = useState<string | null>(null);
   const [isExpired, setIsExpired] = useState(false);
+  const [historyType, setHistoryType] = useState<'visits' | 'facilities'>('visits');
   const socketRef = useRef<any>(null);
+  const [lastFacilityUpdate, setLastFacilityUpdate] = useState<Date>(new Date());
 
   // Initialize WebSocket connection
   useEffect(() => {
@@ -71,12 +77,64 @@ export default function NonMemberDashboard() {
     });
 
     socketRef.current.on('facility-update', (updatedFacility: Facility) => {
+      console.log('🔄 Received facility update via WebSocket:', updatedFacility.name);
       setFacilities(prev => prev.map(f => 
-        f.id === updatedFacility.id ? updatedFacility : f
+        f.id === updatedFacility.id ? {
+          ...updatedFacility,
+          // **PERBAIKAN: Pastikan usage percentage dihitung dengan benar**
+          usagePercentage: Math.round((updatedFacility.currentMembers / updatedFacility.capacity) * 100)
+        } : f
       ));
+      
+      // Update current facility name if it's the current facility
+      if (memberData?.current_facility === updatedFacility.id) {
+        setMemberData(prev => prev ? {
+          ...prev,
+          current_facility_name: updatedFacility.name
+        } : null);
+      }
+      
+      setLastFacilityUpdate(new Date());
+    });
+
+    socketRef.current.on('nonmember-facility-change', (data: { 
+      username: string, 
+      facilityId: string, 
+      facilityName: string,
+      action: 'enter' | 'leave' | 'switch',
+      currentMembers: number 
+    }) => {
+      if (memberData?.username === data.username) {
+        console.log('📍 Non-member facility change:', data);
+        
+        // **PERBAIKAN: Update local state dengan benar**
+        setFacilities(prev => prev.map(f => {
+          if (f.id === data.facilityId) {
+            return {
+              ...f,
+              currentMembers: data.currentMembers,
+              usagePercentage: Math.round((data.currentMembers / f.capacity) * 100)
+            };
+          }
+          return f;
+        }));
+        
+        // Refresh member data jika action adalah 'leave'
+        if (data.action === 'leave') {
+          fetchMemberData(memberData.username);
+        }
+        
+        setLastFacilityUpdate(new Date());
+      }
     });
 
     socketRef.current.on('member-checkin', (data: { memberId: string, facilityId: string }) => {
+      if (memberData?.username === data.memberId) {
+        fetchMemberData(memberData.username);
+      }
+    });
+
+    socketRef.current.on('member-checkout', (data: { memberId: string, facilityId: string }) => {
       if (memberData?.username === data.memberId) {
         fetchMemberData(memberData.username);
       }
@@ -87,7 +145,7 @@ export default function NonMemberDashboard() {
         socketRef.current.disconnect();
       }
     };
-  }, []);
+  }, [memberData]);
 
   // Listen to Firestore real-time updates for facilities
   useEffect(() => {
@@ -95,6 +153,7 @@ export default function NonMemberDashboard() {
     const q = query(facilitiesRef);
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      console.log('🔥 Firestore facilities update received');
       const facilitiesData: Facility[] = [];
       snapshot.forEach((doc) => {
         const data = doc.data();
@@ -112,7 +171,9 @@ export default function NonMemberDashboard() {
           activeMembers: data.activeMembers || []
         });
       });
+      console.log('📊 Facilities updated:', facilitiesData.length);
       setFacilities(facilitiesData);
+      setLastFacilityUpdate(new Date());
     });
 
     return () => unsubscribe();
@@ -129,7 +190,8 @@ export default function NonMemberDashboard() {
     try {
       const userObj = JSON.parse(userData);
       setUser(userObj);
-      fetchMemberData(userObj.username);
+      // Reset auto checkin jika ada
+      fetchMemberData(userObj.username, true);
     } catch (error) {
       console.error('Error parsing user data:', error);
       router.push('/non-member-login');
@@ -142,7 +204,7 @@ export default function NonMemberDashboard() {
       try {
         const expiryDate = new Date(memberData.expired_at);
         const now = new Date();
-        setIsExpired(now > expiryDate);
+        setIsExpired(now > expiryDate || memberData.status === 'expired');
       } catch (error) {
         console.error('Error checking expiration:', error);
         setIsExpired(true);
@@ -150,23 +212,61 @@ export default function NonMemberDashboard() {
     }
   }, [memberData]);
 
-  const fetchMemberData = async (username: string) => {
+  // **PERBAIKAN: Fungsi untuk refresh facilities**
+  const refreshFacilities = async () => {
+    try {
+      console.log('🔄 Manual refresh facilities...');
+      const response = await fetch('/api/facilities?userType=non-member');
+      const result = await response.json();
+      if (result.success) {
+        const updatedFacilities = result.data.map((facility: any) => ({
+          ...facility,
+          usagePercentage: Math.round((facility.currentMembers / facility.capacity) * 100)
+        }));
+        setFacilities(updatedFacilities);
+        console.log('✅ Facilities refreshed:', updatedFacilities.length);
+        setLastFacilityUpdate(new Date());
+      }
+    } catch (error) {
+      console.error('Error refreshing facilities:', error);
+    }
+  };
+
+  const fetchMemberData = async (username: string, resetAutoCheckin = false) => {
     try {
       setLoading(true);
       setError(null);
       
-      const response = await fetch(`/api/non-member/data?username=${username}`);
+      const url = `/api/non-member/data?username=${username}${
+        resetAutoCheckin ? '&preventAutoCheckin=true' : ''
+      }`;
+      
+      const response = await fetch(url);
       const result = await response.json();
 
       if (result.success) {
         setMemberData(result.data);
         
+        // **PERBAIKAN: Update current facility name from facilities list**
+        if (result.data.current_facility) {
+          const currentFacility = facilities.find(f => f.id === result.data.current_facility);
+          if (currentFacility) {
+            setMemberData(prev => prev ? {
+              ...prev,
+              current_facility_name: currentFacility.name
+            } : null);
+          }
+        }
+        
         // Check expiration
         if (result.data.expired_at) {
           const expiryDate = new Date(result.data.expired_at);
           const now = new Date();
-          setIsExpired(now > expiryDate);
+          setIsExpired(now > expiryDate || result.data.status === 'expired');
         }
+        
+        // **PERBAIKAN: Refresh facilities setelah fetch member data**
+        await refreshFacilities();
       } else {
         setError(result.error || 'Gagal memuat data');
         if (result.error?.includes('kadaluarsa') || result.error?.includes('tidak aktif')) {
@@ -182,7 +282,7 @@ export default function NonMemberDashboard() {
   };
 
   const handleDailyCheckin = async () => {
-    if (!user || !memberData) return;
+    if (!user) return;
 
     try {
       setFacilityLoading('daily');
@@ -194,21 +294,25 @@ export default function NonMemberDashboard() {
         },
         body: JSON.stringify({
           username: user.username,
-          action: 'checkin'
+          action: 'checkin',
+          manual_checkin: true // TANDAI sebagai manual
         }),
       });
 
       const result = await response.json();
 
       if (result.success) {
-        alert('Check-in harian berhasil!');
+        // **PERBAIKAN: Refresh facilities setelah checkin**
+        await refreshFacilities();
+        
+        alert(`✅ Check-in harian berhasil!`);
         fetchMemberData(user.username);
       } else {
-        alert('Gagal check-in: ' + result.error);
+        alert('❌ Gagal check-in: ' + result.error);
       }
     } catch (error) {
       console.error('Daily check-in error:', error);
-      alert('Terjadi kesalahan saat check-in');
+      alert('❌ Terjadi kesalahan saat check-in');
     } finally {
       setFacilityLoading(null);
     }
@@ -234,242 +338,115 @@ export default function NonMemberDashboard() {
       const result = await response.json();
 
       if (result.success) {
-        // If currently in a facility, check out from it first
-        if (memberData.current_facility) {
-          await handleFacilityCheckout(memberData.current_facility);
-        }
+        // **PERBAIKAN: Refresh facilities setelah checkout**
+        await refreshFacilities();
         
-        alert('Check-out berhasil!');
+        alert(`✅ Check-out harian berhasil!\n\n🚪 Anda telah keluar dari gym\n📊 Total kunjungan tetap: ${memberData.total_visits + 1}x`);
         fetchMemberData(user.username);
       } else {
-        alert('Gagal check-out: ' + result.error);
+        alert('❌ Gagal check-out: ' + result.error);
       }
     } catch (error) {
       console.error('Daily check-out error:', error);
-      alert('Terjadi kesalahan saat check-out');
+      alert('❌ Terjadi kesalahan saat check-out');
     } finally {
       setFacilityLoading(null);
     }
   };
 
-  const handleFacilityCheckin = async (facilityId: string) => {
-    if (!user || !memberData) return;
-
-    // Validasi
-    if (isExpired) {
-      alert('Daily pass Anda telah kadaluarsa! Silakan beli baru.');
-      return;
-    }
-
-    if (!memberData.active_visit) {
-      alert('Silakan check-in harian terlebih dahulu!');
-      return;
-    }
-
-    if (memberData.current_facility && memberData.current_facility !== facilityId) {
-      const currentFacilityName = facilities.find(f => f.id === memberData.current_facility)?.name || 'fasilitas lain';
-      alert(`Anda sedang menggunakan ${currentFacilityName}. Silakan checkout terlebih dahulu.`);
-      return;
-    }
-
-    try {
-      setFacilityLoading(facilityId);
-      
-      const targetFacility = facilities.find(f => f.id === facilityId);
-      if (!targetFacility) {
-        alert('Fasilitas tidak ditemukan!');
-        return;
-      }
-
-      if (targetFacility.status !== 'available') {
-        alert(`Fasilitas sedang ${targetFacility.status === 'maintenance' ? 'maintenance' : 'dibersihkan'}. Tidak dapat digunakan.`);
-        return;
-      }
-
-      const usagePercentage = (targetFacility.currentMembers / targetFacility.capacity) * 100;
-      if (usagePercentage >= 90) {
-        alert('Fasilitas sudah penuh! Silakan pilih fasilitas lain.');
-        return;
-      }
-
-      // Update fasilitas di Firestore
-      const facilityRef = doc(db, 'facilities', facilityId);
-      const facilitySnap = await getDoc(facilityRef);
-      
-      if (!facilitySnap.exists()) {
-        alert('Data fasilitas tidak ditemukan!');
-        return;
-      }
-
-      const facilityData = facilitySnap.data();
-      
-      // Cek apakah user sudah ada di fasilitas ini
-      const isAlreadyInFacility = facilityData.activeMembers?.some(
-        (member: any) => member.id === memberData.username
-      );
-
-      if (isAlreadyInFacility) {
-        alert('Anda sudah check-in ke fasilitas ini!');
-        return;
-      }
-
-      const newActiveMembers = [
-        ...(facilityData.activeMembers || []),
-        {
-          id: memberData.username,
-          name: memberData.nama,
-          checkinTime: new Date().toISOString(),
-          type: 'non-member-daily'
-        }
-      ];
-
-      await updateDoc(facilityRef, {
-        currentMembers: (facilityData.currentMembers || 0) + 1,
-        currentUsage: Math.round(((facilityData.currentMembers || 0) + 1) / facilityData.capacity * 100),
-        activeMembers: newActiveMembers,
-        updatedAt: new Date().toISOString()
-      });
-
-      // Update non_members collection dengan current_facility
-      const nonMembersRef = collection(db, 'non_members');
-      const nonMemberQuery = query(nonMembersRef, where('username', '==', user.username));
-      const nonMemberSnapshot = await getDocs(nonMemberQuery);
-      
-      if (!nonMemberSnapshot.empty) {
-        const nonMemberDoc = nonMemberSnapshot.docs[0];
-        await updateDoc(nonMemberDoc.ref, {
-          current_facility: facilityId,
-          last_checkin: new Date().toISOString(),
-          updated_at: new Date()
-        });
-      }
-
-      // Add facility visit record to non_member_visits
-      await addDoc(collection(db, 'non_member_visits'), {
-        username: memberData.username,
-        daily_code: memberData.daily_code,
-        nama: memberData.nama,
-        facility_id: facilityId,
-        facility_name: targetFacility.name,
-        type: 'facility_checkin',
-        status: 'active',
-        checkin_time: new Date(),
-        created_at: new Date()
-      });
-
-      // Kirim update via WebSocket
-      if (socketRef.current) {
-        socketRef.current.emit('facility-checkin', {
-          facilityId,
-          memberId: memberData.username,
-          memberName: memberData.nama,
-          memberType: 'non-member-daily',
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      alert(`Check-in ke ${targetFacility.name} berhasil!`);
-      fetchMemberData(user.username);
-      
-    } catch (error) {
-      console.error('Facility check-in error:', error);
-      alert('Terjadi kesalahan saat check-in ke fasilitas');
-    } finally {
-      setFacilityLoading(null);
-    }
-  };
-
-  const handleFacilityCheckout = async (facilityId: string) => {
+  const handleSelectFacility = async (facilityId: string) => {
     if (!user || !memberData) return;
 
     try {
       setFacilityLoading(facilityId);
       
-      // Validasi: apakah user benar-benar di fasilitas ini
-      if (memberData.current_facility !== facilityId) {
-        alert('Anda tidak sedang menggunakan fasilitas ini!');
-        return;
-      }
+      const response = await fetch('/api/non-member/data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username: user.username,
+          action: 'select_facility',
+          facilityId: facilityId
+        }),
+      });
 
-      const facilityRef = doc(db, 'facilities', facilityId);
-      const facilitySnap = await getDoc(facilityRef);
-      
-      if (facilitySnap.exists()) {
-        const facilityData = facilitySnap.data();
-        const updatedActiveMembers = facilityData.activeMembers?.filter(
-          (member: any) => member.id !== memberData.username
-        ) || [];
+      const result = await response.json();
 
-        await updateDoc(facilityRef, {
-          currentMembers: Math.max(0, (facilityData.currentMembers || 0) - 1),
-          currentUsage: Math.round(Math.max(0, (facilityData.currentMembers || 0) - 1) / facilityData.capacity * 100),
-          activeMembers: updatedActiveMembers,
-          updatedAt: new Date().toISOString()
-        });
-
-        // Update non_members collection
-        const nonMembersRef = collection(db, 'non_members');
-        const nonMemberQuery = query(nonMembersRef, where('username', '==', user.username));
-        const nonMemberSnapshot = await getDocs(nonMemberQuery);
+      if (result.success) {
+        // **PERBAIKAN: Dapatkan data fasilitas yang update**
+        const facility = facilities.find(f => f.id === facilityId);
+        const facilityName = facility?.name || 'Fasilitas';
         
-        if (!nonMemberSnapshot.empty) {
-          const nonMemberDoc = nonMemberSnapshot.docs[0];
-          await updateDoc(nonMemberDoc.ref, {
-            current_facility: null,
-            updated_at: new Date()
-          });
-        }
-
-        // Update facility visit record to completed
-        const visitsRef = collection(db, 'non_member_visits');
-        const activeVisitQuery = query(
-          visitsRef,
-          where('username', '==', user.username),
-          where('facility_id', '==', facilityId),
-          where('status', '==', 'active')
-        );
+        // **PERBAIKAN: Refresh facilities setelah select facility**
+        await refreshFacilities();
         
-        const activeVisitSnapshot = await getDocs(activeVisitQuery);
-        
-        if (!activeVisitSnapshot.empty) {
-          const activeVisit = activeVisitSnapshot.docs[0];
-          const checkinTime = activeVisit.data().checkin_time?.toDate?.() || activeVisit.data().checkin_time;
-          const checkoutTime = new Date();
-          const durationMs = checkoutTime.getTime() - checkinTime.getTime();
-          const durationMinutes = Math.floor(durationMs / (1000 * 60));
-
-          await updateDoc(doc(db, 'non_member_visits', activeVisit.id), {
-            status: 'completed',
-            checkout_time: checkoutTime,
-            duration: `${durationMinutes} menit`,
-            updated_at: new Date()
-          });
-        }
-
-        // Kirim update via WebSocket
-        if (socketRef.current) {
-          socketRef.current.emit('facility-checkout', {
-            facilityId,
-            memberId: memberData.username,
-            timestamp: new Date().toISOString()
-          });
-        }
-
-        alert(`Check-out dari fasilitas berhasil!`);
+        // **PERBAIKAN: Refresh member data untuk update current facility**
         fetchMemberData(user.username);
+        
+        if (result.data.is_visit === false) {
+          alert(`✅ ${result.message}\n\n📍 ${facilityName}\n👥 ${result.data.current_members}/${result.data.capacity} orang\n📊 Penggunaan: ${result.data.usage_percentage}%\n\n💡 Catatan: Memilih fasilitas TIDAK menambah total kunjungan\nTotal kunjungan tetap: ${memberData.total_visits}x`);
+        } else {
+          alert(result.message);
+        }
       } else {
-        alert('Fasilitas tidak ditemukan!');
+        alert('❌ Gagal memilih fasilitas: ' + result.error);
       }
     } catch (error) {
-      console.error('Facility checkout error:', error);
-      alert('Terjadi kesalahan saat check-out dari fasilitas');
+      console.error('Facility selection error:', error);
+      alert('❌ Terjadi kesalahan saat memilih fasilitas');
+    } finally {
+      setFacilityLoading(null);
+    }
+  };
+
+  const handleLeaveFacility = async () => {
+    if (!user || !memberData) return;
+
+    if (!memberData.current_facility) {
+      alert('⚠️ Anda tidak sedang menggunakan fasilitas');
+      return;
+    }
+
+    try {
+      setFacilityLoading(memberData.current_facility);
+      
+      const response = await fetch('/api/non-member/data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username: user.username,
+          action: 'leave_facility'
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        // **PERBAIKAN: Refresh facilities setelah leave facility**
+        await refreshFacilities();
+        
+        // **PERBAIKAN: Refresh member data untuk update current facility**
+        fetchMemberData(user.username);
+        
+        alert(`✅ Berhasil keluar dari fasilitas!\n\n📊 Total kunjungan tetap: ${memberData.total_visits}x\n\n💡 Catatan: Keluar fasilitas TIDAK mengurangi total kunjungan`);
+      } else {
+        alert('❌ Gagal keluar dari fasilitas: ' + result.error);
+      }
+    } catch (error) {
+      console.error('Leave facility error:', error);
+      alert('❌ Terjadi kesalahan saat keluar dari fasilitas');
     } finally {
       setFacilityLoading(null);
     }
   };
 
   const getFacilityStatus = (facility: Facility) => {
-    const usagePercentage = (facility.currentMembers / facility.capacity) * 100;
+    // **PERBAIKAN: Hitung usage percentage dengan benar**
+    const usagePercentage = Math.round((facility.currentMembers / facility.capacity) * 100);
     
     if (facility.status === 'maintenance' || facility.status === 'cleaning') {
       return {
@@ -520,84 +497,104 @@ export default function NonMemberDashboard() {
   };
 
   const formatDate = (dateString: string) => {
-  try {
-    if (!dateString) return 'Belum diatur';
-    
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) {
-      // Coba format lain
-      if (dateString.includes('T')) {
-        return new Date(dateString).toLocaleString('id-ID');
+    try {
+      if (!dateString) return 'Belum diatur';
+      
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) {
+        if (dateString.includes('T')) {
+          return new Date(dateString).toLocaleString('id-ID');
+        }
+        return 'Tanggal tidak valid';
       }
+      return date.toLocaleString('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+    } catch (error) {
       return 'Tanggal tidak valid';
     }
-    return date.toLocaleString('id-ID', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  } catch (error) {
-    return 'Tanggal tidak valid';
-  }
-};
+  };
 
-const getRemainingTime = (expiredAt: string) => {
-  try {
-    if (!expiredAt) return 'Belum diatur';
-    
-    const now = new Date();
-    const expiry = new Date(expiredAt);
-    
-    if (isNaN(expiry.getTime())) {
-      // Jika expired_at invalid, hitung 24 jam dari created_at
-      if (memberData?.created_at) {
-        const created = new Date(memberData.created_at);
-        const newExpiry = new Date(created.getTime() + (24 * 60 * 60 * 1000));
-        const diffMs = newExpiry.getTime() - now.getTime();
-        
-        if (diffMs <= 0) {
-          return 'Telah kadaluarsa';
+  const getRemainingTime = (expiredAt: string) => {
+    try {
+      if (!expiredAt) return 'Belum diatur';
+      
+      const now = new Date();
+      const expiry = new Date(expiredAt);
+      
+      if (isNaN(expiry.getTime())) {
+        if (memberData?.created_at) {
+          const created = new Date(memberData.created_at);
+          const newExpiry = new Date(created.getTime() + (24 * 60 * 60 * 1000));
+          const diffMs = newExpiry.getTime() - now.getTime();
+          
+          if (diffMs <= 0) {
+            return 'Telah kadaluarsa';
+          }
+          
+          const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+          const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+          
+          if (diffHours > 0) {
+            return `${diffHours} jam ${diffMinutes} menit`;
+          } else if (diffMinutes > 0) {
+            return `${diffMinutes} menit`;
+          } else {
+            return 'Kurang dari 1 menit';
+          }
         }
-        
-        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-        const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-        
-        if (diffHours > 0) {
-          return `${diffHours} jam ${diffMinutes} menit`;
-        } else if (diffMinutes > 0) {
-          return `${diffMinutes} menit`;
-        } else {
-          return 'Kurang dari 1 menit';
-        }
+        return 'Tanggal tidak valid';
       }
-      return 'Tanggal tidak valid';
-    }
-    
-    const diffMs = expiry.getTime() - now.getTime();
-    
-    if (diffMs <= 0) {
-      return 'Telah kadaluarsa';
-    }
-    
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+      
+      const diffMs = expiry.getTime() - now.getTime();
+      
+      if (diffMs <= 0) {
+        return 'Telah kadaluarsa';
+      }
+      
+      const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+      const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
 
-    if (diffHours > 24) {
-      const diffDays = Math.floor(diffHours / 24);
-      return `${diffDays} hari ${diffHours % 24} jam`;
-    } else if (diffHours > 0) {
-      return `${diffHours} jam ${diffMinutes} menit`;
-    } else if (diffMinutes > 0) {
-      return `${diffMinutes} menit`;
+      if (diffHours > 24) {
+        const diffDays = Math.floor(diffHours / 24);
+        return `${diffDays} hari ${diffHours % 24} jam`;
+      } else if (diffHours > 0) {
+        return `${diffHours} jam ${diffMinutes} menit`;
+      } else if (diffMinutes > 0) {
+        return `${diffMinutes} menit`;
+      } else {
+        return 'Kurang dari 1 menit';
+      }
+    } catch (error) {
+      return 'Error menghitung waktu';
+    }
+  };
+
+  const handlePrintECard = () => {
+    if (activeTab !== 'dashboard') {
+      setActiveTab('dashboard');
+      setTimeout(() => {
+        window.print();
+      }, 100);
     } else {
-      return 'Kurang dari 1 menit';
+      window.print();
     }
-  } catch (error) {
-    return 'Error menghitung waktu';
-  }
-};
+  };
+
+  // **PERBAIKAN: Tambahkan fungsi manual refresh facilities**
+  const handleManualRefreshFacilities = async () => {
+    try {
+      await refreshFacilities();
+      alert('✅ Fasilitas berhasil di-refresh!');
+    } catch (error) {
+      alert('❌ Gagal refresh fasilitas');
+    }
+  };
 
   if (loading) {
     return (
@@ -650,13 +647,16 @@ const getRemainingTime = (expiredAt: string) => {
     }
 
     const remainingTime = getRemainingTime(memberData.expired_at);
+    const currentFacility = memberData.current_facility 
+      ? facilities.find(f => f.id === memberData.current_facility)
+      : null;
 
     switch (activeTab) {
       case 'dashboard':
         return (
           <div className="space-y-6">
             {/* Welcome Section */}
-            <div className={`rounded-2xl p-6 text-white ${
+            <div className={`rounded-2xl p-6 text-white print:hidden ${
               isExpired ? 'bg-gradient-to-r from-red-500 to-orange-600' : 'bg-gradient-to-r from-blue-500 to-purple-600'
             }`}>
               <h1 className="text-2xl font-bold mb-2">
@@ -665,17 +665,20 @@ const getRemainingTime = (expiredAt: string) => {
               <p className="opacity-90">
                 {isExpired 
                   ? 'Daily pass Anda telah kadaluarsa. Silakan beli lagi untuk akses gym.'
-                  : 'Semangat berolahraga hari ini!'
+                  : `Semangat berolahraga hari ini! Total kunjungan: ${memberData.total_visits}x`
                 }
               </p>
+              <div className="mt-2 text-sm opacity-80">
+                🕒 Terakhir update: {lastFacilityUpdate.toLocaleTimeString('id-ID')}
+              </div>
             </div>
 
             {/* Stats Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6 print:hidden">
               <div className="bg-white rounded-xl p-6 shadow-lg border">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-gray-600 text-sm">Status</p>
+                    <p className="text-gray-600 text-sm">Status Pass</p>
                     <p className={`text-2xl font-bold ${
                       isExpired ? 'text-red-600' : 'text-green-600'
                     }`}>
@@ -694,42 +697,67 @@ const getRemainingTime = (expiredAt: string) => {
               <div className="bg-white rounded-xl p-6 shadow-lg border">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-gray-600 text-sm">Total Kunjungan</p>
-                    <p className="text-2xl font-bold text-blue-600">
-                      {memberData.total_visits || 0}x
+                    <p className="text-gray-600 text-sm">Status Gym</p>
+                    <p className={`text-2xl font-bold ${
+                      memberData.active_visit ? 'text-green-600' : 'text-gray-600'
+                    }`}>
+                      {memberData.active_visit ? 'Dalam Gym' : 'Di Luar'}
                     </p>
                   </div>
-                  <div className="text-3xl">🏋️</div>
+                  <div className="text-3xl">{memberData.active_visit ? '🏃' : '🚶'}</div>
                 </div>
                 <p className="text-sm text-gray-600 mt-2">
-                  {memberData.active_visit ? 'Sedang check-in' : 'Belum check-in'}
+                  Total kunjungan: <span className="font-bold">{memberData.total_visits || 0}x</span>
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  (Hanya checkin harian)
                 </p>
               </div>
 
               <div className="bg-white rounded-xl p-6 shadow-lg border">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-gray-600 text-sm">Fasilitas Saat Ini</p>
-                    <p className="text-2xl font-bold text-purple-600 truncate">
-                      {memberData.current_facility 
-                        ? facilities.find(f => f.id === memberData.current_facility)?.name || 'Fasilitas'
-                        : 'Tidak ada'
-                      }
+                    <p className="text-gray-600 text-sm">Fasilitas</p>
+                    <p className={`text-2xl font-bold ${
+                      memberData.current_facility ? 'text-blue-600' : 'text-gray-600'
+                    }`}>
+                      {memberData.current_facility ? 'Aktif' : 'Tidak Aktif'}
                     </p>
                   </div>
-                  <div className="text-3xl">{memberData.current_facility ? '📍' : '🏠'}</div>
+                  <div className="text-3xl">{memberData.current_facility ? '📍' : '💤'}</div>
+                </div>
+                <p className="text-sm text-gray-600 mt-2 truncate">
+                  {memberData.current_facility_name || 'Belum memilih fasilitas'}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {memberData.current_facility ? 'Tidak menambah kunjungan' : '-'}
+                </p>
+              </div>
+
+              <div className="bg-white rounded-xl p-6 shadow-lg border">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-gray-600 text-sm">Aktivitas Fasilitas</p>
+                    <p className="text-2xl font-bold text-purple-600">
+                      {memberData.facility_activities?.length || 0}
+                    </p>
+                  </div>
+                  <div className="text-3xl">📈</div>
                 </div>
                 <p className="text-sm text-gray-600 mt-2">
-                  {memberData.current_facility ? 'Sedang digunakan' : 'Belum memilih fasilitas'}
+                  {memberData.facility_activities?.filter(a => a.status === 'active').length || 0} aktif
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  (Tidak termasuk dalam kunjungan)
                 </p>
               </div>
             </div>
 
             {/* Quick Actions */}
             {!isExpired && (
-              <div className="bg-white rounded-xl p-6 shadow-lg border">
+              <div className="bg-white rounded-xl p-6 shadow-lg border print:hidden">
                 <h2 className="text-xl font-bold mb-4">Quick Actions</h2>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   {!memberData.active_visit ? (
                     <button
                       onClick={handleDailyCheckin}
@@ -741,7 +769,7 @@ const getRemainingTime = (expiredAt: string) => {
                       ) : (
                         <span>📝</span>
                       )}
-                      <span>Check-in Harian</span>
+                      <span>Check-in Gym</span>
                     </button>
                   ) : (
                     <button
@@ -754,7 +782,7 @@ const getRemainingTime = (expiredAt: string) => {
                       ) : (
                         <span>🚪</span>
                       )}
-                      <span>Check-out</span>
+                      <span>Check-out Gym</span>
                     </button>
                   )}
                   
@@ -763,14 +791,14 @@ const getRemainingTime = (expiredAt: string) => {
                       onClick={() => setActiveTab('facilities')}
                       className="bg-blue-500 text-white py-4 px-6 rounded-lg hover:bg-blue-600 transition font-semibold text-lg flex items-center justify-center space-x-2"
                     >
-                      <span>🏋️</span>
+                      <span>📍</span>
                       <span>Pilih Fasilitas</span>
                     </button>
                   )}
                   
                   {memberData.current_facility && (
                     <button 
-                      onClick={() => handleFacilityCheckout(memberData.current_facility!)}
+                      onClick={handleLeaveFacility}
                       disabled={facilityLoading === memberData.current_facility}
                       className="bg-red-500 text-white py-4 px-6 rounded-lg hover:bg-red-600 transition font-semibold text-lg flex items-center justify-center space-x-2 disabled:opacity-50"
                     >
@@ -779,124 +807,221 @@ const getRemainingTime = (expiredAt: string) => {
                       ) : (
                         <span>🚪</span>
                       )}
-                      <span>Check-out Fasilitas</span>
+                      <span>Keluar Fasilitas</span>
+                    </button>
+                  )}
+                  
+                  {memberData.active_visit && memberData.current_facility && (
+                    <button 
+                      onClick={() => setActiveTab('facilities')}
+                      className="bg-purple-500 text-white py-4 px-6 rounded-lg hover:bg-purple-600 transition font-semibold text-lg flex items-center justify-center space-x-2"
+                    >
+                      <span>🔄</span>
+                      <span>Ganti Fasilitas</span>
                     </button>
                   )}
                   
                   <button 
-                    onClick={() => window.print()}
-                    className="bg-purple-500 text-white py-4 px-6 rounded-lg hover:bg-purple-600 transition font-semibold text-lg flex items-center justify-center space-x-2"
+                    onClick={handlePrintECard}
+                    className="bg-indigo-500 text-white py-4 px-6 rounded-lg hover:bg-indigo-600 transition font-semibold text-lg flex items-center justify-center space-x-2 col-span-2 md:col-span-1"
                   >
                     <span>🖨️</span>
                     <span>Cetak E-Card</span>
                   </button>
                 </div>
+                
+                {/* **PERBAIKAN: Tambahkan refresh button */}
+                <div className="mt-4 flex justify-between items-center">
+                  <div className="flex items-center space-x-2">
+                    <button 
+                      onClick={handleManualRefreshFacilities}
+                      className="bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 transition text-sm flex items-center space-x-2"
+                    >
+                      <span>🔄</span>
+                      <span>Refresh Fasilitas</span>
+                    </button>
+                    <span className="text-xs text-gray-500">
+                      Terakhir: {lastFacilityUpdate.toLocaleTimeString('id-ID')}
+                    </span>
+                  </div>
+                  
+                  <div className="text-sm text-gray-600">
+                    Total Fasilitas: {facilities.length}
+                  </div>
+                </div>
+                
+                {/* Info Penting */}
+                
               </div>
             )}
 
             {/* Current Facility Info */}
-            {memberData.current_facility && (
-              <div className="bg-white rounded-xl p-6 shadow-lg border">
-                <h2 className="text-xl font-bold mb-4">Fasilitas yang Digunakan</h2>
+            {memberData.current_facility && currentFacility && (
+              <div className="bg-white rounded-xl p-6 shadow-lg border print:hidden">
+                <h2 className="text-xl font-bold mb-4">Fasilitas yang Sedang Digunakan</h2>
                 <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-6 border border-green-200">
-                  {(() => {
-                    const currentFacility = facilities.find(f => f.id === memberData.current_facility);
-                    if (!currentFacility) return (
-                      <div className="text-center py-8">
-                        <p className="text-gray-500">Fasilitas tidak ditemukan</p>
-                      </div>
-                    );
-                    
-                    const status = getFacilityStatus(currentFacility);
-                    const usagePercentage = Math.round((currentFacility.currentMembers / currentFacility.capacity) * 100);
-                    
-                    return (
-                      <div className="space-y-4">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <h3 className="text-2xl font-bold text-gray-800">{currentFacility.name}</h3>
-                            <div className="flex items-center space-x-2 mt-1">
-                              <span className={`px-3 py-1 rounded-full text-sm font-semibold ${status.color}`}>
-                                {status.icon} {status.label} • LIVE
-                              </span>
-                              <span className="text-sm text-gray-600">
-                                {currentFacility.currentMembers}/{currentFacility.capacity} orang • {usagePercentage}% kapasitas
-                              </span>
-                            </div>
-                          </div>
-                          <div className="text-4xl">🏋️‍♂️</div>
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-2xl font-bold text-gray-800">{currentFacility.name}</h3>
+                        <div className="flex items-center space-x-2 mt-1">
+                          <span className="px-3 py-1 rounded-full text-sm font-semibold bg-green-100 text-green-800 border border-green-300">
+                            🟢 LIVE • {currentFacility.currentMembers}/{currentFacility.capacity} orang
+                          </span>
+                          <span className="text-sm text-gray-600">
+                            {Math.round((currentFacility.currentMembers / currentFacility.capacity) * 100)}% kapasitas
+                          </span>
                         </div>
-                        
-                        {/* Progress Bar */}
-                        <div className="space-y-2">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-gray-600">Penggunaan Fasilitas</span>
-                            <span className="font-semibold">{usagePercentage}%</span>
-                          </div>
-                          <div className="w-full bg-gray-200 rounded-full h-2.5">
+                        <p className="text-sm text-blue-600 mt-1">
+                          Anda masuk pada: {formatDate(
+                            memberData.facility_activities?.find(a => 
+                              a.facility_id === memberData.current_facility && a.status === 'active'
+                            )?.checkin_time || new Date().toISOString()
+                          )}
+                        </p>
+                      </div>
+                      <div className="text-4xl">🏋️‍♂️</div>
+                    </div>
+                    
+                    {/* Progress Bar */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600">Penggunaan Fasilitas</span>
+                        <span className="font-semibold">
+                          {Math.round((currentFacility.currentMembers / currentFacility.capacity) * 100)}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2.5">
+                        <div 
+                          className="h-2.5 rounded-full bg-green-500"
+                          style={{ 
+                            width: `${Math.min(
+                              Math.round((currentFacility.currentMembers / currentFacility.capacity) * 100), 
+                              100
+                            )}%` 
+                          }}
+                        ></div>
+                      </div>
+                    </div>
+                    
+                    {/* Active Members */}
+                    {currentFacility.activeMembers && currentFacility.activeMembers.length > 0 && (
+                      <div className="mt-4">
+                        <p className="text-sm text-gray-600 mb-2">
+                          Sedang berolahraga ({currentFacility.activeMembers.length} orang):
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {currentFacility.activeMembers.map((member, index) => (
                             <div 
-                              className={`h-2.5 rounded-full ${status.textColor.replace('text-', 'bg-')}`}
-                              style={{ width: `${Math.min(usagePercentage, 100)}%` }}
-                            ></div>
-                          </div>
-                        </div>
-                        
-                        {/* Active Members */}
-                        {currentFacility.activeMembers && currentFacility.activeMembers.length > 0 && (
-                          <div className="mt-4">
-                            <p className="text-sm text-gray-600 mb-2">Sedang berolahraga:</p>
-                            <div className="flex flex-wrap gap-2">
-                              {currentFacility.activeMembers.map((member, index) => (
-                                <div 
-                                  key={index} 
-                                  className={`px-3 py-1.5 rounded-full text-sm ${
-                                    member.id === memberData.username 
-                                      ? 'bg-blue-100 text-blue-800 border border-blue-300' 
-                                      : 'bg-gray-100 text-gray-800'
-                                  }`}
-                                >
-                                  {member.name}
-                                  {member.id === memberData.username && ' (Anda)'}
-                                </div>
-                              ))}
+                              key={index} 
+                              className={`px-3 py-1.5 rounded-full text-sm ${
+                                member.id === memberData.username 
+                                  ? 'bg-blue-100 text-blue-800 border border-blue-300' 
+                                  : 'bg-gray-100 text-gray-800'
+                              }`}
+                            >
+                              {member.name}
+                              {member.id === memberData.username && ' (Anda)'}
                             </div>
-                          </div>
-                        )}
+                          ))}
+                        </div>
                       </div>
-                    );
-                  })()}
+                    )}
+                    
+                    <div className="flex space-x-4 mt-4">
+                      <button
+                        onClick={handleLeaveFacility}
+                        disabled={facilityLoading === memberData.current_facility}
+                        className="flex-1 bg-red-500 text-white py-3 px-4 rounded-lg hover:bg-red-600 transition font-semibold flex items-center justify-center space-x-2 disabled:opacity-50"
+                      >
+                        {facilityLoading === memberData.current_facility ? (
+                          <>
+                            <span className="animate-spin">⌛</span>
+                            <span>Processing...</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>🚪</span>
+                            <span>Keluar dari Fasilitas Ini</span>
+                          </>
+                        )}
+                      </button>
+                      
+                      <button
+                        onClick={() => setActiveTab('facilities')}
+                        className="flex-1 bg-blue-500 text-white py-3 px-4 rounded-lg hover:bg-blue-600 transition font-semibold flex items-center justify-center space-x-2"
+                      >
+                        <span>🔄</span>
+                        <span>Ganti Fasilitas</span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
 
             {/* E-Card Display */}
-            <div className="bg-white rounded-xl p-6 shadow-lg border">
-              <h2 className="text-xl font-bold mb-4">E-Card Daily Pass</h2>
-              <div className={`rounded-2xl p-6 text-white ${
+            <div className="bg-white rounded-xl p-6 shadow-lg border print:border-0 print:shadow-none print:p-0">
+              <h2 className="text-xl font-bold mb-4 print:hidden">E-Card Daily Pass</h2>
+              <div id="e-card" className={`rounded-2xl p-6 text-white print:rounded-none print:p-8 print:min-h-[calc(100vh-2rem)] ${
                 isExpired ? 'bg-gradient-to-r from-gray-500 to-gray-600' : 'bg-gradient-to-r from-green-500 to-emerald-600'
               }`}>
-                <div className="text-center mb-4">
-                  <div className="text-4xl mb-2">🎫</div>
-                  <h3 className="text-2xl font-bold">DAILY PASS</h3>
-                  <p className="opacity-90">HS Gym Rancakihiyang</p>
+                <div className="text-center mb-4 print:mb-6">
+                  <div className="text-4xl mb-2 print:text-5xl">🎫</div>
+                  <h3 className="text-2xl font-bold print:text-3xl">DAILY PASS</h3>
+                  <p className="opacity-90 print:text-lg">HS Gym Rancakihiyang</p>
+                  <p className="text-sm mt-1 print:text-base">
+                    Total Kunjungan: {memberData.total_visits}x
+                  </p>
                 </div>
                 
-                <div className="space-y-3 text-sm">
+                <div className="space-y-3 text-sm print:space-y-4 print:text-base">
                   <div className="flex justify-between">
                     <span className="opacity-90">Kode:</span>
-                    <span className="font-mono font-bold text-xl">{memberData.daily_code}</span>
+                    <span className="font-mono font-bold text-xl print:text-2xl">{memberData.daily_code}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="opacity-90">Username:</span>
-                    <span className="font-mono font-semibold">{memberData.username}</span>
+                    <span className="font-mono font-semibold print:text-lg">{memberData.username}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="opacity-90">Nama:</span>
-                    <span className="font-semibold">{memberData.nama}</span>
+                    <span className="font-semibold print:text-lg">{memberData.nama}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="opacity-90">Berlaku hingga:</span>
-                    <span className="font-semibold">{formatDate(memberData.expired_at)}</span>
+                    <span className="font-semibold print:text-lg">{formatDate(memberData.expired_at)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="opacity-90">Total Kunjungan:</span>
+                    <span className="font-semibold print:text-lg">{memberData.total_visits}x</span>
+                  </div>
+                  {memberData.current_facility_name && (
+                    <div className="flex justify-between">
+                      <span className="opacity-90">Fasilitas Aktif:</span>
+                      <span className="font-semibold print:text-lg">{memberData.current_facility_name}</span>
+                    </div>
+                  )}
+                </div>
+                
+                {/* QR Code Section */}
+                <div className="mt-8 pt-6 border-t border-white/20 print:mt-12 print:pt-8">
+                  <div className="text-center">
+                    <p className="text-sm opacity-90 mb-2 print:text-base">Tunjukkan QR Code ini saat check-in</p>
+                    <div className="inline-block bg-white p-2 rounded-lg print:p-3">
+                      <div className="w-32 h-32 bg-gray-100 flex items-center justify-center print:w-40 print:h-40 relative">
+                        <Image
+                          src="/qris.jpg"
+                          alt="QR Code Daily Pass"
+                          fill
+                          className="object-contain p-2"
+                          sizes="(max-width: 128px) 100vw, 128px"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs opacity-90 mt-2 print:text-sm">
+                      Generated on: {new Date().toLocaleString('id-ID')}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -906,12 +1031,36 @@ const getRemainingTime = (expiredAt: string) => {
 
       case 'facilities':
         return (
-          <div className="space-y-6">
+          <div className="space-y-6 print:hidden">
             <div className="bg-white rounded-xl p-6 shadow-lg border">
               <div className="flex justify-between items-center mb-6">
                 <div>
-                  <h2 className="text-2xl font-bold text-gray-800">Fasilitas Gym</h2>
-                  <p className="text-gray-600">Pilih fasilitas yang ingin digunakan (Real-time)</p>
+                  <h2 className="text-2xl font-bold text-gray-800">Fasilitas Gym (Real-time)</h2>
+                  <p className="text-gray-600">
+                    {memberData.current_facility 
+                      ? 'Anda bisa ganti fasilitas atau keluar dari fasilitas saat ini'
+                      : 'Pilih fasilitas untuk berolahraga'
+                    }
+                  </p>
+                  {memberData.current_facility && (
+                    <div className="mt-2">
+                      <div className="flex items-center space-x-2 text-blue-600">
+                        <span className="text-xl">📍</span>
+                        <span className="font-semibold">
+                          Anda sedang di: {memberData.current_facility_name}
+                        </span>
+                      </div>
+                      <p className="text-sm text-green-600 mt-1">
+                        💡 Memilih/ganti fasilitas <span className="font-bold">TIDAK menambah total kunjungan</span>
+                      </p>
+                    </div>
+                  )}
+                  <div className="mt-2 p-2 bg-blue-50 rounded-lg">
+                    <p className="text-sm text-blue-800">
+                      <span className="font-bold">Total Kunjungan Anda:</span> {memberData.total_visits}x 
+                      (hanya dari checkin harian)
+                    </p>
+                  </div>
                 </div>
                 <div className="flex space-x-2">
                   <div className="flex items-center space-x-1">
@@ -926,90 +1075,40 @@ const getRemainingTime = (expiredAt: string) => {
                     <div className="w-3 h-3 rounded-full bg-red-500"></div>
                     <span className="text-sm">Penuh</span>
                   </div>
-                  <div className="flex items-center space-x-1">
-                    <div className="w-3 h-3 rounded-full bg-gray-500"></div>
-                    <span className="text-sm">Maintenance</span>
-                  </div>
+                  <button 
+                    onClick={handleManualRefreshFacilities}
+                    className="ml-4 bg-gray-500 text-white px-3 py-1 rounded-lg hover:bg-gray-600 transition text-sm flex items-center space-x-1"
+                  >
+                    <span>🔄</span>
+                    <span>Refresh</span>
+                  </button>
                 </div>
               </div>
               
-              {/* Filter Options */}
-              <div className="flex flex-wrap gap-2 mb-6">
-                <button 
-                  onClick={() => fetchMemberData(user.username).then(() => {
-                    const facilitiesRef = collection(db, 'facilities');
-                    const q = query(facilitiesRef);
-                    getDocs(q).then(snapshot => {
-                      const facilitiesData: Facility[] = [];
-                      snapshot.forEach((doc) => {
-                        const data = doc.data();
-                        facilitiesData.push({
-                          id: doc.id,
-                          name: data.name || 'Unknown Facility',
-                          capacity: data.capacity || 0,
-                          currentUsage: data.currentUsage || 0,
-                          currentMembers: data.currentMembers || 0,
-                          status: data.status || 'available',
-                          equipment: data.equipment || [],
-                          peakHours: data.peakHours || [],
-                          lastMaintenance: data.lastMaintenance || '',
-                          nextMaintenance: data.nextMaintenance || '',
-                          activeMembers: data.activeMembers || []
-                        });
-                      });
-                      setFacilities(facilitiesData);
-                    });
-                  })}
-                  className="px-4 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition"
-                >
-                  Semua
-                </button>
-                <button 
-                  onClick={() => {
-                    const available = facilities.filter(f => 
-                      (f.currentMembers / f.capacity) < 0.7 && 
-                      f.status === 'available'
-                    );
-                    setFacilities([...available]);
-                  }}
-                  className="px-4 py-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition"
-                >
-                  Tersedia
-                </button>
-                <button 
-                  onClick={() => {
-                    const busy = facilities.filter(f => 
-                      (f.currentMembers / f.capacity) >= 0.7 && 
-                      (f.currentMembers / f.capacity) < 0.9
-                    );
-                    setFacilities([...busy]);
-                  }}
-                  className="px-4 py-2 bg-orange-100 text-orange-700 rounded-lg hover:bg-orange-200 transition"
-                >
-                  Ramai
-                </button>
-                <button 
-                  onClick={() => {
-                    const full = facilities.filter(f => 
-                      (f.currentMembers / f.capacity) >= 0.9
-                    );
-                    setFacilities([...full]);
-                  }}
-                  className="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition"
-                >
-                  Penuh
-                </button>
+              {/* **PERBAIKAN: Tambahkan status update */}
+              <div className="mb-4 p-3 bg-green-50 border border-green-200 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <span className="text-green-600">🔄</span>
+                    <span className="text-sm text-green-800">
+                      Data fasilitas real-time • Terakhir update: {lastFacilityUpdate.toLocaleTimeString('id-ID')}
+                    </span>
+                  </div>
+                  <span className="text-xs text-gray-500">
+                    Total fasilitas: {facilities.length}
+                  </span>
+                </div>
               </div>
               
               {/* Facilities Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {facilities.map(facility => {
                   const status = getFacilityStatus(facility);
+                  // **PERBAIKAN: Hitung usage percentage dengan benar**
                   const usagePercentage = Math.round((facility.currentMembers / facility.capacity) * 100);
-                  const isUsingFacility = memberData.current_facility === facility.id;
-                  const canCheckin = !isExpired && 
+                  const isCurrentFacility = memberData.current_facility === facility.id;
+                  const canSelect = !isExpired && 
                     memberData.active_visit && 
-                    !memberData.current_facility &&
                     facility.status === 'available' &&
                     usagePercentage < 90;
                   
@@ -1017,7 +1116,7 @@ const getRemainingTime = (expiredAt: string) => {
                     <div 
                       key={facility.id} 
                       className={`rounded-xl border p-6 transition-all duration-300 ${
-                        isUsingFacility 
+                        isCurrentFacility 
                           ? 'ring-2 ring-blue-500 bg-blue-50' 
                           : 'bg-white hover:shadow-lg'
                       }`}
@@ -1030,8 +1129,12 @@ const getRemainingTime = (expiredAt: string) => {
                               {status.icon} {status.label} • LIVE
                             </span>
                             <span className="text-sm text-gray-600">
-                              {facility.currentMembers}/{facility.capacity} orang • {usagePercentage}% kapasitas
+                              {facility.currentMembers}/{facility.capacity} orang
                             </span>
+                          </div>
+                          {/* **PERBAIKAN: Tampilkan progress persentase */}
+                          <div className="mt-1 text-xs text-gray-500">
+                            Penggunaan: {usagePercentage}%
                           </div>
                         </div>
                         <div className="text-3xl">
@@ -1044,7 +1147,7 @@ const getRemainingTime = (expiredAt: string) => {
                       {/* Progress Bar */}
                       <div className="mb-4">
                         <div className="flex justify-between text-sm mb-1">
-                          <span className="text-gray-600">Tingkat Penggunaan</span>
+                          <span className="text-gray-600">Penggunaan</span>
                           <span className="font-semibold">{usagePercentage}%</span>
                         </div>
                         <div className="w-full bg-gray-200 rounded-full h-2">
@@ -1055,101 +1158,97 @@ const getRemainingTime = (expiredAt: string) => {
                         </div>
                       </div>
                       
-                      {/* Equipment List */}
-                      <div className="mb-4">
-                        <p className="text-sm font-semibold text-gray-700 mb-2">Equipment:</p>
-                        <div className="flex flex-wrap gap-2">
-                          {facility.equipment.slice(0, 3).map((eq, index) => (
-                            <span 
-                              key={index} 
-                              className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs"
-                            >
-                              {eq.name} ({eq.count})
-                            </span>
-                          ))}
-                          {facility.equipment.length > 3 && (
-                            <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs">
-                              +{facility.equipment.length - 3} lagi
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      
-                      {/* Peak Hours */}
-                      <div className="mb-4">
-                        <p className="text-sm font-semibold text-gray-700 mb-1">
-                          🕐 Jam sibuk: {facility.peakHours.join(', ')}
-                        </p>
-                      </div>
-                      
                       {/* Active Members */}
                       {facility.activeMembers && facility.activeMembers.length > 0 && (
                         <div className="mb-4">
                           <p className="text-sm text-gray-600 mb-1">
-                            {facility.currentMembers} orang sedang berolahraga
+                            Pengguna ({facility.activeMembers.length}):
                           </p>
-                          <div className="flex flex-wrap gap-1">
-                            {facility.activeMembers.slice(0, 3).map((member, index) => (
-                              <span 
+                          <div className="space-y-1 max-h-20 overflow-y-auto">
+                            {facility.activeMembers.map((member, index) => (
+                              <div 
                                 key={index} 
-                                className="text-xs px-2 py-0.5 bg-gray-100 rounded"
+                                className={`flex items-center justify-between px-2 py-1 rounded text-xs ${
+                                  member.id === memberData.username 
+                                    ? 'bg-blue-100 text-blue-800' 
+                                    : 'bg-gray-100 text-gray-800'
+                                }`}
                               >
-                                {member.name}
-                              </span>
+                                <span className="truncate">{member.name}</span>
+                                <span className="text-xs opacity-75">
+                                  {member.id === memberData.username ? '(Anda)' : ''}
+                                </span>
+                              </div>
                             ))}
-                            {facility.activeMembers.length > 3 && (
-                              <span className="text-xs px-2 py-0.5 bg-gray-100 rounded">
-                                +{facility.activeMembers.length - 3} lainnya
-                              </span>
-                            )}
                           </div>
                         </div>
                       )}
                       
-                      {/* Maintenance Info */}
-                      <div className="text-xs text-gray-500 mb-4">
-                        Maintenance terakhir: {facility.lastMaintenance} • 
-                        Next: {facility.nextMaintenance}
-                      </div>
-                      
-                      {/* Action Button */}
-                      <div className="mt-4">
-                        {isUsingFacility ? (
-                          <button
-                            onClick={() => handleFacilityCheckout(facility.id)}
-                            disabled={facilityLoading === facility.id}
-                            className="w-full bg-red-500 text-white py-2.5 px-4 rounded-lg hover:bg-red-600 transition font-semibold flex items-center justify-center space-x-2 disabled:opacity-50"
-                          >
-                            {facilityLoading === facility.id ? (
-                              <>
-                                <span className="animate-spin">⌛</span>
-                                <span>Processing...</span>
-                              </>
-                            ) : (
-                              <>
-                                <span>🚪</span>
-                                <span>Check-out dari Fasilitas Ini</span>
-                              </>
-                            )}
-                          </button>
-                        ) : canCheckin ? (
-                          <button
-                            onClick={() => handleFacilityCheckin(facility.id)}
-                            disabled={facilityLoading === facility.id}
-                            className="w-full bg-green-500 text-white py-2.5 px-4 rounded-lg hover:bg-green-600 transition font-semibold flex items-center justify-center space-x-2 disabled:opacity-50"
-                          >
-                            {facilityLoading === facility.id ? (
-                              <>
-                                <span className="animate-spin">⌛</span>
-                                <span>Processing...</span>
-                              </>
-                            ) : (
-                              <>
-                                <span>📝</span>
-                                <span>Check-in ke Fasilitas Ini</span>
-                              </>
-                            )}
-                          </button>
+                      {/* Action Buttons */}
+                      <div className="mt-4 space-y-2">
+                        {isCurrentFacility ? (
+                          <>
+                            <button
+                              onClick={() => handleSelectFacility(facility.id)}
+                              disabled={facilityLoading === facility.id}
+                              className="w-full bg-green-500 text-white py-2.5 px-4 rounded-lg hover:bg-green-600 transition font-semibold flex items-center justify-center space-x-2 disabled:opacity-50"
+                            >
+                              {facilityLoading === facility.id ? (
+                                <>
+                                  <span className="animate-spin">⌛</span>
+                                  <span>Processing...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span>🔄</span>
+                                  <span>Ganti ke Fasilitas Ini</span>
+                                </>
+                              )}
+                            </button>
+                            <button
+                              onClick={handleLeaveFacility}
+                              disabled={facilityLoading === facility.id}
+                              className="w-full bg-red-500 text-white py-2.5 px-4 rounded-lg hover:bg-red-600 transition font-semibold flex items-center justify-center space-x-2 disabled:opacity-50"
+                            >
+                              {facilityLoading === facility.id ? (
+                                <>
+                                  <span className="animate-spin">⌛</span>
+                                  <span>Processing...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span>🚪</span>
+                                  <span>Keluar dari Fasilitas</span>
+                                </>
+                              )}
+                            </button>
+                            <div className="text-xs text-center text-gray-500 mt-1">
+                              💡 Tindakan ini <span className="font-bold">TIDAK</span> mempengaruhi total kunjungan
+                            </div>
+                          </>
+                        ) : canSelect ? (
+                          <>
+                            <button
+                              onClick={() => handleSelectFacility(facility.id)}
+                              disabled={facilityLoading === facility.id}
+                              className="w-full bg-blue-500 text-white py-2.5 px-4 rounded-lg hover:bg-blue-600 transition font-semibold flex items-center justify-center space-x-2 disabled:opacity-50"
+                            >
+                              {facilityLoading === facility.id ? (
+                                <>
+                                  <span className="animate-spin">⌛</span>
+                                  <span>Processing...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span>📍</span>
+                                  <span>Pilih Fasilitas Ini</span>
+                                </>
+                              )}
+                            </button>
+                            <div className="text-xs text-center text-green-600 mt-1">
+                              ✅ Aksi ini <span className="font-bold">TIDAK menambah</span> total kunjungan
+                            </div>
+                          </>
                         ) : (
                           <button
                             disabled
@@ -1157,18 +1256,16 @@ const getRemainingTime = (expiredAt: string) => {
                             title={
                               isExpired ? 'Daily pass telah kadaluarsa' :
                               !memberData.active_visit ? 'Belum check-in harian' :
-                              memberData.current_facility ? 'Sedang menggunakan fasilitas lain' :
                               facility.status !== 'available' ? `Fasilitas ${facility.status}` :
                               usagePercentage >= 90 ? 'Fasilitas penuh' :
-                              'Tidak dapat check-in'
+                              'Pilih Fasilitas'
                             }
                           >
                             {isExpired ? 'Daily pass telah kadaluarsa' :
                              !memberData.active_visit ? 'Belum check-in harian' :
-                             memberData.current_facility ? 'Sedang menggunakan fasilitas lain' :
                              facility.status !== 'available' ? `Fasilitas ${facility.status}` :
                              usagePercentage >= 90 ? 'Fasilitas penuh' :
-                             'Tidak dapat check-in'}
+                             'Pilih Fasilitas'}
                           </button>
                         )}
                       </div>
@@ -1182,6 +1279,12 @@ const getRemainingTime = (expiredAt: string) => {
                   <div className="text-6xl mb-4">🏋️</div>
                   <p className="text-gray-500 text-lg">Tidak ada fasilitas yang tersedia</p>
                   <p className="text-gray-400">Coba filter lain atau refresh halaman</p>
+                  <button 
+                    onClick={handleManualRefreshFacilities}
+                    className="mt-4 bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition font-semibold"
+                  >
+                    🔄 Refresh Fasilitas
+                  </button>
                 </div>
               )}
             </div>
@@ -1190,7 +1293,7 @@ const getRemainingTime = (expiredAt: string) => {
 
       case 'profile':
         return (
-          <div className="bg-white rounded-xl p-6 shadow-lg border">
+          <div className="bg-white rounded-xl p-6 shadow-lg border print:hidden">
             <h2 className="text-2xl font-bold mb-6">Profile Daily Pass</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
@@ -1220,14 +1323,14 @@ const getRemainingTime = (expiredAt: string) => {
               </div>
               
               <div>
-                <h3 className="text-lg font-semibold mb-4">Informasi Pass</h3>
+                <h3 className="text-lg font-semibold mb-4">Informasi Pass & Aktivitas</h3>
                 <div className="space-y-3">
                   <div>
                     <label className="text-sm text-gray-600">Harga</label>
                     <p className="font-semibold">Rp {memberData.harga?.toLocaleString('id-ID') || '0'}</p>
                   </div>
                   <div>
-                    <label className="text-sm text-gray-600">Status</label>
+                    <label className="text-sm text-gray-600">Status Pass</label>
                     <span className={`px-2 py-1 rounded-full text-sm font-semibold ${
                       isExpired 
                         ? 'bg-red-100 text-red-800' 
@@ -1235,6 +1338,16 @@ const getRemainingTime = (expiredAt: string) => {
                     }`}>
                       {isExpired ? 'Kadaluarsa' : 'Aktif'}
                     </span>
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-600">Total Kunjungan Gym</label>
+                    <p className="font-semibold text-blue-600">{memberData.total_visits} kali</p>
+                    <p className="text-xs text-gray-500">(hanya dari checkin harian)</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-gray-600">Aktivitas Fasilitas</label>
+                    <p className="font-semibold text-purple-600">{memberData.facility_activities?.length || 0} kali</p>
+                    <p className="text-xs text-gray-500">(tidak termasuk dalam kunjungan)</p>
                   </div>
                   <div>
                     <label className="text-sm text-gray-600">Tanggal Daftar</label>
@@ -1258,63 +1371,194 @@ const getRemainingTime = (expiredAt: string) => {
 
       case 'history':
         return (
-          <div className="bg-white rounded-xl p-6 shadow-lg border">
-            <h2 className="text-2xl font-bold mb-6">Riwayat Kunjungan</h2>
-            {memberData.visits && memberData.visits.length > 0 ? (
-              <div className="space-y-4">
-                {memberData.visits.map((visit, index) => (
-                  <div key={visit.id || `visit-${index}`} className="flex items-center justify-between p-4 border rounded-lg">
-                    <div className="flex items-center space-x-4">
-                      <div className={`w-12 h-12 rounded-full flex items-center justify-center ${
-                        visit.status === 'active' ? 'bg-green-100' : 'bg-blue-100'
-                      }`}>
-                        <span className={`text-xl ${
-                          visit.status === 'active' ? 'text-green-600' : 'text-blue-600'
+          <div className="bg-white rounded-xl p-6 shadow-lg border print:hidden">
+            <h2 className="text-2xl font-bold mb-6">Riwayat Aktivitas</h2>
+            
+            {/* Info Penting */}
+            <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-start space-x-2">
+                <span className="text-blue-600 text-lg">📊</span>
+                <div>
+                  <p className="text-blue-800 font-semibold">Sistem Penghitungan Kunjungan:</p>
+                  <ul className="text-sm text-blue-700 mt-1 space-y-1">
+                    <li>• <span className="font-bold">Check-in harian</span> = <span className="font-bold text-green-600">+1 total kunjungan</span></li>
+                    <li>• <span className="font-bold">Pilih/ganti fasilitas</span> = <span className="font-bold text-gray-600">TIDAK menambah kunjungan</span></li>
+                    <li>• <span className="font-bold">Total kunjungan saat ini:</span> <span className="font-bold text-blue-600">{memberData.total_visits}x</span></li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+            
+            {/* Tab untuk kunjungan vs aktivitas fasilitas */}
+            <div className="flex space-x-2 mb-6">
+              <button
+                onClick={() => setHistoryType('visits')}
+                className={`px-4 py-2 rounded-lg transition ${historyType === 'visits' ? 'bg-blue-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+              >
+                Kunjungan Gym ({memberData.total_visits || 0})
+              </button>
+              <button
+                onClick={() => setHistoryType('facilities')}
+                className={`px-4 py-2 rounded-lg transition ${historyType === 'facilities' ? 'bg-purple-500 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+              >
+                Aktivitas Fasilitas ({memberData.facility_activities?.length || 0})
+              </button>
+            </div>
+            
+            {historyType === 'visits' ? (
+              // TAMPILKAN KUNJUNGAN GYM (HANYA yang login_type = 'non_member_daily')
+              memberData.visits && memberData.visits.length > 0 ? (
+                <div className="space-y-4">
+                  {memberData.visits.map((visit, index) => (
+                    <div key={visit.id || `visit-${index}`} className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50 transition">
+                      <div className="flex items-center space-x-4">
+                        <div className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                          visit.status === 'active' ? 'bg-green-100' : 'bg-blue-100'
                         }`}>
-                          {visit.status === 'active' ? '🏃' : '✅'}
+                          <span className={`text-xl ${
+                            visit.status === 'active' ? 'text-green-600' : 'text-blue-600'
+                          }`}>
+                            {visit.login_type === 'non_member_daily' ? '🎫' : '📝'}
+                          </span>
+                        </div>
+                        <div>
+                          <div className="flex items-center space-x-2">
+                            <p className="font-semibold">Kunjungan Gym #{memberData.visits.length - index}</p>
+                            {visit.manual_checkin && (
+                              <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded">
+                                Manual
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-600">
+                            {formatDate(visit.checkin_time)}
+                            {visit.checkout_time && ` - ${formatDate(visit.checkout_time)}`}
+                          </p>
+                          {visit.duration && (
+                            <p className="text-sm text-green-600 font-medium">
+                              ⏱️ Durasi: {visit.duration}
+                            </p>
+                          )}
+                          {visit.location && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              📍 {visit.location}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end">
+                        <span className={`px-3 py-1 rounded-full text-sm font-semibold mb-2 ${
+                          visit.status === 'active' 
+                            ? 'bg-green-100 text-green-800' : 'bg-blue-100 text-blue-800'
+                        }`}>
+                          {visit.status === 'active' ? 'Sedang di Gym' : 'Selesai'}
+                        </span>
+                        <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
+                          +1 Kunjungan
                         </span>
                       </div>
-                      <div>
-                        <p className="font-semibold">
-                          {visit.facility_name || 'Gym Area'}
-                        </p>
-                        <p className="text-sm text-gray-600">
-                          {formatDate(visit.checkin_time)}
-                          {visit.checkout_time && ` - ${formatDate(visit.checkout_time)}`}
-                        </p>
-                        {visit.duration && (
-                          <p className="text-sm text-gray-500">Durasi: {visit.duration}</p>
-                        )}
-                        <p className="text-sm text-gray-500">
-                          {visit.type === 'facility_checkin' ? 'Fasilitas' : 'Area Utama'}
-                        </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <div className="text-6xl mb-4">📊</div>
+                  <p className="text-gray-500 text-lg">Belum ada riwayat kunjungan</p>
+                  <p className="text-gray-400">Lakukan check-in pertama Anda!</p>
+                  {!isExpired && !memberData.active_visit && (
+                    <button 
+                      onClick={handleDailyCheckin}
+                      disabled={facilityLoading === 'daily'}
+                      className="mt-4 bg-green-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 transition font-semibold disabled:opacity-50 flex items-center justify-center space-x-2 mx-auto"
+                    >
+                      {facilityLoading === 'daily' ? (
+                        <span className="animate-spin">⌛</span>
+                      ) : (
+                        <span>📝</span>
+                      )}
+                      <span>Check-in Sekarang (+1 Kunjungan)</span>
+                    </button>
+                  )}
+                </div>
+              )
+            ) : (
+              // TAMPILKAN AKTIVITAS FASILITAS
+              memberData.facility_activities && memberData.facility_activities.length > 0 ? (
+                <div className="space-y-4">
+                  {memberData.facility_activities.map((activity, index) => (
+                    <div key={activity.id || `activity-${index}`} className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50 transition">
+                      <div className="flex items-center space-x-4">
+                        <div className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                          activity.status === 'active' ? 'bg-purple-100' : 'bg-gray-100'
+                        }`}>
+                          <span className={`text-xl ${
+                            activity.status === 'active' ? 'text-purple-600' : 'text-gray-600'
+                          }`}>
+                            {activity.activity_type === 'enter' ? '📍' : 
+                             activity.activity_type === 'switch' ? '🔄' : '🏋️'}
+                          </span>
+                        </div>
+                        <div>
+                          <p className="font-semibold">
+                            {activity.activity_type === 'enter' ? 'Masuk ke Fasilitas' : 
+                             activity.activity_type === 'switch' ? 'Ganti Fasilitas' : 'Aktivitas Fasilitas'}
+                          </p>
+                          <p className="text-sm text-gray-600">
+                            {activity.facility_name || 'Fasilitas'}
+                          </p>
+                          <div className="text-sm text-gray-600">
+                            <span>{formatDate(activity.checkin_time)}</span>
+                            {activity.checkout_time && (
+                              <span> - {formatDate(activity.checkout_time)}</span>
+                            )}
+                          </div>
+                          {activity.previous_facility_name && (
+                            <p className="text-xs text-blue-600 mt-1">
+                              Dari: {activity.previous_facility_name}
+                            </p>
+                          )}
+                          {activity.duration && activity.duration !== '0 menit' && (
+                            <p className="text-sm text-green-600 font-medium mt-1">
+                              ⏱️ Durasi: {activity.duration}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end">
+                        <span className={`px-3 py-1 rounded-full text-sm font-semibold mb-2 ${
+                          activity.status === 'active' 
+                            ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-800'
+                        }`}>
+                          {activity.status === 'active' ? 'Sedang digunakan' : 'Selesai'}
+                        </span>
+                        <span className="text-xs bg-gray-100 text-gray-800 px-2 py-1 rounded">
+                          Tidak +Kunjungan
+                        </span>
                       </div>
                     </div>
-                    <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
-                      visit.status === 'active' 
-                        ? 'bg-green-100 text-green-800' 
-                        : 'bg-blue-100 text-blue-800'
-                    }`}>
-                      {visit.status === 'active' ? 'Aktif' : 'Selesai'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-center py-12">
-                <div className="text-6xl mb-4">📊</div>
-                <p className="text-gray-500 text-lg">Belum ada riwayat kunjungan</p>
-                <p className="text-gray-400">Lakukan check-in pertama Anda!</p>
-                {!isExpired && (
-                  <button 
-                    onClick={handleDailyCheckin}
-                    disabled={facilityLoading === 'daily'}
-                    className="mt-4 bg-green-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 transition font-semibold disabled:opacity-50"
-                  >
-                    📝 Check-in Sekarang
-                  </button>
-                )}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <div className="text-6xl mb-4">🏋️</div>
+                  <p className="text-gray-500 text-lg">Belum ada aktivitas fasilitas</p>
+                  <p className="text-gray-400">
+                    {memberData.active_visit 
+                      ? 'Pilih fasilitas untuk mulai berolahraga!' 
+                      : 'Lakukan check-in terlebih dahulu untuk menggunakan fasilitas'
+                    }
+                  </p>
+                  {memberData.active_visit && !memberData.current_facility && (
+                    <button 
+                      onClick={() => setActiveTab('facilities')}
+                      className="mt-4 bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition font-semibold flex items-center justify-center space-x-2 mx-auto"
+                    >
+                      <span>📍</span>
+                      <span>Pilih Fasilitas (Tidak +Kunjungan)</span>
+                    </button>
+                  )}
+                </div>
+              )
             )}
           </div>
         );
@@ -1326,8 +1570,33 @@ const getRemainingTime = (expiredAt: string) => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-purple-100">
+      {/* Print-only CSS */}
+      <style jsx global>{`
+        @media print {
+          body * {
+            visibility: hidden;
+            background: white !important;
+          }
+          #e-card, #e-card * {
+            visibility: visible;
+          }
+          #e-card {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: white !important;
+            color: black !important;
+          }
+          .print\\:hidden {
+            display: none !important;
+          }
+        }
+      `}</style>
+      
       {/* Header */}
-      <nav className="bg-white shadow-lg sticky top-0 z-40">
+      <nav className="bg-white shadow-lg sticky top-0 z-40 print:hidden">
         <div className="container mx-auto px-6 py-4">
           <div className="flex justify-between items-center">
             <div className="flex items-center space-x-3">
@@ -1337,6 +1606,12 @@ const getRemainingTime = (expiredAt: string) => {
               <div>
                 <h1 className="text-xl font-bold text-gray-800">Daily Pass Dashboard</h1>
                 <p className="text-sm text-gray-600">HS Gym Management System</p>
+                <p className="text-xs text-blue-600 font-medium">
+                  Total Kunjungan: {memberData?.total_visits || 0}x
+                </p>
+                <p className="text-xs text-gray-500">
+                  🕒 Update: {lastFacilityUpdate.toLocaleTimeString('id-ID')}
+                </p>
               </div>
             </div>
             
@@ -1344,7 +1619,10 @@ const getRemainingTime = (expiredAt: string) => {
               <div className="text-right hidden md:block">
                 <p className="text-gray-700 font-semibold truncate max-w-[200px]">{memberData?.nama || user.nama}</p>
                 <p className="text-sm text-gray-600 truncate max-w-[200px]">
-                  {memberData?.username || user.username} • {memberData ? getRemainingTime(memberData.expired_at) : 'Loading...'}
+                  {memberData?.username || user.username}
+                </p>
+                <p className={`text-xs ${isExpired ? 'text-red-600' : 'text-green-600'} font-medium`}>
+                  {memberData ? getRemainingTime(memberData.expired_at) : 'Loading...'}
                 </p>
               </div>
               <button 
@@ -1377,18 +1655,19 @@ const getRemainingTime = (expiredAt: string) => {
       </nav>
 
       {/* Main Content */}
-      <div className="container mx-auto p-4 md:p-6">
+      <div className="container mx-auto p-4 md:p-6 print:p-0">
         {/* Real-time Indicator */}
-        <div className="mb-4 flex items-center space-x-2 text-sm text-green-600 bg-green-50 px-4 py-2 rounded-lg">
+        <div className="mb-4 flex items-center space-x-2 text-sm text-green-600 bg-green-50 px-4 py-2 rounded-lg print:hidden">
           <span className="animate-pulse">●</span>
           <span>Connected - Data fasilitas real-time</span>
           <span className="ml-auto text-xs text-gray-500">
-            Terakhir update: {new Date().toLocaleTimeString('id-ID')}
+            Total Kunjungan: {memberData?.total_visits || 0}x • 
+            Terakhir update: {lastFacilityUpdate.toLocaleTimeString('id-ID')}
           </span>
         </div>
         
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 print:hidden">
             <div className="flex items-center">
               <div className="text-red-600">⚠️</div>
               <div className="ml-3">
