@@ -1,6 +1,7 @@
 // File: app/api/admin/financial-reports/chart/route.js
 // PERBAIKAN: Gunakan query sederhana tanpa composite index, tidak pakai random data
 import { NextResponse } from 'next/server';
+export const dynamic = 'force-dynamic';
 import { db } from '@/lib/firebase-client';
 import {
   collection,

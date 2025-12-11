@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+export const dynamic = 'force-dynamic';
 import { db } from '@/lib/firebase';
 import { doc, getDoc, collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 
@@ -44,9 +45,9 @@ export async function GET(request) {
         orderBy('tanggal', 'desc'),
         limit(1)
       );
-      
+
       const transactionsSnapshot = await getDocs(transactionsQuery);
-      
+
       if (!transactionsSnapshot.empty) {
         const latestTransaction = transactionsSnapshot.docs[0].data();
         paymentStatus = latestTransaction.status || 'unknown';

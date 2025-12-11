@@ -1,5 +1,6 @@
 // app/api/facilities/route.js
 import { NextResponse } from 'next/server';
+export const dynamic = 'force-dynamic';
 import { db } from '@/lib/firebase';
 import { collection, getDocs } from 'firebase/firestore';
 
@@ -7,12 +8,12 @@ export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
     const userType = searchParams.get('userType') || 'member';
-    
+
     console.log(`🔍 Fetching facilities for ${userType}...`);
-    
+
     // Ambil data dari Firebase
     const facilitiesSnapshot = await getDocs(collection(db, 'facilities'));
-    
+
     if (facilitiesSnapshot.empty) {
       return NextResponse.json({
         success: true,
@@ -27,7 +28,7 @@ export async function GET(request) {
       const currentMembers = data.currentMembers || data.currentUsage || 0;
       const capacity = data.capacity || 25;
       const usagePercentage = Math.min(100, Math.round((currentMembers / capacity) * 100));
-      
+
       // Format dasar yang sama untuk semua user
       const baseFacility = {
         id: doc.id,
@@ -60,7 +61,7 @@ export async function GET(request) {
     });
 
     console.log(`✅ Found ${facilities.length} facilities for ${userType}`);
-    
+
     return NextResponse.json({
       success: true,
       data: facilities,
@@ -71,7 +72,7 @@ export async function GET(request) {
 
   } catch (error) {
     console.error('❌ Error fetching facilities:', error);
-    
+
     // Fallback data jika error
     return NextResponse.json({
       success: true,
@@ -86,11 +87,11 @@ export async function GET(request) {
 // Helper function untuk menentukan status fasilitas (untuk member)
 function getFacilityStatusForMember(facility) {
   const usagePercentage = facility.usagePercentage;
-  
+
   let statusText = 'Sejuk';
   let statusColor = 'green';
   let isAvailable = true;
-  
+
   if (facility.status === 'maintenance') {
     statusText = 'Maintenance';
     statusColor = 'gray';
@@ -106,7 +107,7 @@ function getFacilityStatusForMember(facility) {
     statusText = 'Sedang';
     statusColor = 'blue';
   }
-  
+
   return {
     statusText,
     statusColor,

@@ -1,19 +1,20 @@
 import { NextResponse } from 'next/server';
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   const startTime = Date.now();
-  
+
   try {
     const { searchParams } = new URL(request.url);
     const minimal = searchParams.get('minimal') === 'true';
     const fields = searchParams.get('fields') || 'summary';
-    
+
     console.log('⚡ Financial-fast API called:', { minimal, fields });
-    
+
     // 🔥 SUPER FAST RESPONSE - NO DATABASE QUERIES
     const now = new Date();
     const todayKey = now.toISOString().split('T')[0];
-    
+
     // Static data for instant response
     const staticData = {
       summary: {
@@ -38,7 +39,7 @@ export async function GET(request) {
       timestamp: now.toISOString(),
       dateKey: todayKey
     };
-    
+
     // Filter fields if requested
     let responseData = staticData;
     if (fields === 'summary') {
@@ -47,10 +48,10 @@ export async function GET(request) {
         timestamp: staticData.timestamp
       };
     }
-    
+
     const responseTime = Date.now() - startTime;
     console.log(`✅ Financial-fast responded in ${responseTime}ms`);
-    
+
     return NextResponse.json({
       success: true,
       data: responseData,
@@ -61,10 +62,10 @@ export async function GET(request) {
         'Cache-Control': 'public, max-age=30, stale-while-revalidate=60'
       }
     });
-    
+
   } catch (error) {
     console.error('Error in financial-fast:', error);
-    
+
     // Fallback - tetap return data cepat
     return NextResponse.json({
       success: true,

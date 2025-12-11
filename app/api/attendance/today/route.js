@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
+export const dynamic = 'force-dynamic';
 import { db } from '@/lib/firebase';
-import { 
-  collection, 
-  query, 
-  where, 
-  getDocs 
+import {
+  collection,
+  query,
+  where,
+  getDocs
 } from 'firebase/firestore';
 
 export async function GET(request) {
@@ -28,7 +29,7 @@ export async function GET(request) {
     );
 
     const attendanceSnapshot = await getDocs(attendanceQuery);
-    
+
     if (attendanceSnapshot.empty) {
       return NextResponse.json({
         success: true,

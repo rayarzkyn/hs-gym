@@ -1,5 +1,6 @@
 // app/api/member/transactions/route.js
 import { NextResponse } from 'next/server';
+export const dynamic = 'force-dynamic';
 import { collection, query, where, getDocs, orderBy, limit } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
@@ -40,7 +41,7 @@ export async function GET(request) {
       const memberRef = collection(db, 'members');
       const memberQuery = query(memberRef, where('nomor_member', '==', memberId));
       const memberSnapshot = await getDocs(memberQuery);
-      
+
       if (!memberSnapshot.empty) {
         const memberData = memberSnapshot.docs[0].data();
         transactionsData.push(...(memberData.riwayat_transaksi || []));

@@ -1,6 +1,9 @@
+```javascript
 // api/admin/financial-reports/realtime-chart/route.js
 import { db } from '@/lib/firebase';
 import { collection, getDocs, query, where, Timestamp, orderBy } from 'firebase/firestore';
+import { NextResponse } from 'next/server';
+export const dynamic = 'force-dynamic';
 
 export async function GET(request) {
   try {
@@ -8,7 +11,7 @@ export async function GET(request) {
     const days = parseInt(searchParams.get('days') || '7');
     const type = searchParams.get('type') || 'revenue'; // 'revenue' or 'transactions'
     
-    console.log(`📈 REAL-TIME CHART API: ${days} days, type: ${type}`);
+    console.log(`📈 REAL - TIME CHART API: ${ days } days, type: ${ type } `);
     
     // Validate days parameter
     if (days < 1 || days > 365) {
