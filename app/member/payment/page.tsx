@@ -4,6 +4,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
 
+export const dynamic = 'force-dynamic';
+
 interface PaymentData {
   username: string;
   nomor_member: string;
@@ -452,8 +454,8 @@ function PaymentContent() {
         {/* Payment Card */}
         <div className="bg-white/10 backdrop-blur-lg rounded-3xl border border-white/20 shadow-2xl overflow-hidden">
           <div className={`py-4 text-center ${paymentType === 'extension'
-              ? 'bg-gradient-to-r from-purple-500 to-pink-500'
-              : 'bg-gradient-to-r from-cyan-500 to-blue-500'
+            ? 'bg-gradient-to-r from-purple-500 to-pink-500'
+            : 'bg-gradient-to-r from-cyan-500 to-blue-500'
             }`}>
             <h2 className="text-2xl font-bold text-white">
               {paymentType === 'extension' ? '🔄 Perpanjangan Membership' : 'Konfirmasi Pembayaran'}
@@ -521,8 +523,8 @@ function PaymentContent() {
                     key={method.id}
                     onClick={() => setPaymentMethod(method.id)}
                     className={`flex items-center p-4 border-2 rounded-xl cursor-pointer transition-all backdrop-blur-sm ${paymentMethod === method.id
-                        ? 'border-cyan-400 bg-cyan-500/20'
-                        : 'border-white/20 bg-white/5 hover:border-cyan-300/50'
+                      ? 'border-cyan-400 bg-cyan-500/20'
+                      : 'border-white/20 bg-white/5 hover:border-cyan-300/50'
                       }`}
                   >
                     <div className="text-2xl mr-3">{method.icon}</div>
@@ -625,8 +627,8 @@ function PaymentContent() {
               onClick={handlePayment}
               disabled={isProcessing || !!success}
               className={`w-full py-4 px-4 rounded-xl font-bold text-lg transition-all duration-300 transform hover:-translate-y-0.5 disabled:bg-gray-500 disabled:cursor-not-allowed shadow-lg ${paymentType === 'extension'
-                  ? 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 shadow-purple-500/25'
-                  : 'bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 shadow-green-500/25'
+                ? 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 shadow-purple-500/25'
+                : 'bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 shadow-green-500/25'
                 } text-white`}
             >
               {isProcessing ? (
